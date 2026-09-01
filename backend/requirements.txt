@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+alembic
+psycopg2-binary
+pydantic
+google-genai
+instructor
+agora-token-builder
+python-multipart
+aiolimiter

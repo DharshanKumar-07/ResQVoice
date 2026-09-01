@@ -1,0 +1,22 @@
+# Node
+node_modules/
+dist/
+.npm-cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# MacOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Build artifacts and temps
+.tmp/
+*.log
