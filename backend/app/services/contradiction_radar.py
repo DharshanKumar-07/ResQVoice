@@ -41,7 +41,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Protocol
+from typing import Optional, Protocol
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -74,6 +74,13 @@ class ConflictRecord(BaseModel):
     claim_b_id: str
     status: str = "UNRESOLVED"
     recommended_verification: str
+
+
+class ConflictRecheckResult(BaseModel):
+    """Conflict changes produced by re-checking one claim."""
+    active_conflict_ids: list[str]
+    new_conflict_ids: list[str]
+    resolved_conflict_ids: list[str]
 
 
 # ── Comparator protocol (dependency-injection boundary) ───────────────────────
@@ -235,6 +242,8 @@ def detect_conflicts(
     new_claim: ClaimSnapshot,
     db: Session,
     comparator: Optional[ClaimComparator] = None,
+    *,
+    commit: bool = True,
 ) -> list:
     """
     Scan existing claims in the Incident State store for contradictions with
@@ -248,37 +257,112 @@ def detect_conflicts(
     Returns:
         List of persisted Conflict ORM objects.
     """
-    from app.models import Claim, Conflict  # local import keeps module importable offline
+    result = recheck_conflicts(new_claim, db, comparator=comparator, commit=commit)
+    if not result.active_conflict_ids:
+        return []
+
+    from app.models import Conflict
+    return db.query(Conflict).filter(Conflict.id.in_(result.active_conflict_ids)).all()
+
+
+def recheck_conflicts(
+    new_claim: ClaimSnapshot,
+    db: Session,
+    comparator: Optional[ClaimComparator] = None,
+    *,
+    commit: bool = True,
+) -> ConflictRecheckResult:
+    """Idempotently re-evaluate and upsert conflicts involving one claim.
+
+    Existing pairs are reused instead of duplicated. Pairs no longer detected,
+    or pairs involving a lifecycle-terminal claim, are marked RESOLVED.
+    """
+    from sqlalchemy import or_
+    from app.models import Claim, Conflict
 
     if comparator is None:
         comparator = _make_gemini_comparator()
 
-    detector = ContradictionDetector(comparator=comparator)
+    existing_conflicts = (
+        db.query(Conflict)
+        .filter(or_(Conflict.claim_a_id == new_claim.id, Conflict.claim_b_id == new_claim.id))
+        .all()
+    )
+    persisted_claim = db.query(Claim).filter(Claim.id == new_claim.id).first()
+    terminal = persisted_claim is not None and (persisted_claim.status or "").upper() in {
+        "RESOLVED", "REJECTED"
+    }
 
-    # Load all existing claims from DB (excluding the new one)
-    rows = db.query(Claim).filter(Claim.id != new_claim.id).all()
-    existing = [
-        ClaimSnapshot(id=row.id, text=row.text or "", speaker=row.speaker or "",
-                      role=row.role or "")
-        for row in rows
-    ]
+    conflict_records: list[ConflictRecord] = []
+    if not terminal:
+        detector = ContradictionDetector(comparator=comparator)
+        rows = db.query(Claim).filter(Claim.id != new_claim.id).all()
+        existing = [
+            ClaimSnapshot(
+                id=row.id,
+                text=row.text or "",
+                speaker=row.speaker or "",
+                role=row.role or "",
+            )
+            for row in rows
+        ]
+        conflict_records = detector.detect(new_claim, existing)
 
-    conflict_records = detector.detect(new_claim, existing)
+    def pair_key(a: str, b: str) -> tuple[str, str]:
+        return tuple(sorted((a, b)))
 
-    persisted: list[Conflict] = []
-    for cr in conflict_records:
-        orm_row = Conflict(
-            id=cr.id,
-            topic=cr.topic,
-            claim_a_id=cr.claim_a_id,
-            claim_b_id=cr.claim_b_id,
-            status=cr.status,
-            recommended_verification=cr.recommended_verification,
-        )
-        db.add(orm_row)
-        persisted.append(orm_row)
+    existing_by_pair: dict[tuple[str, str], Conflict] = {}
+    duplicate_rows: list[Conflict] = []
+    for row in existing_conflicts:
+        key = pair_key(row.claim_a_id, row.claim_b_id)
+        if key in existing_by_pair:
+            duplicate_rows.append(row)
+        else:
+            existing_by_pair[key] = row
 
-    if persisted:
+    detected_pairs: set[tuple[str, str]] = set()
+    active_ids: list[str] = []
+    new_ids: list[str] = []
+    resolved_ids: list[str] = []
+
+    for record in conflict_records:
+        key = pair_key(record.claim_a_id, record.claim_b_id)
+        detected_pairs.add(key)
+        row = existing_by_pair.get(key)
+        if row is None:
+            row = Conflict(
+                id=record.id,
+                topic=record.topic,
+                claim_a_id=record.claim_a_id,
+                claim_b_id=record.claim_b_id,
+                status="UNRESOLVED",
+                recommended_verification=record.recommended_verification,
+            )
+            db.add(row)
+            existing_by_pair[key] = row
+            new_ids.append(row.id)
+        else:
+            row.topic = record.topic
+            row.status = "UNRESOLVED"
+            row.recommended_verification = record.recommended_verification
+        active_ids.append(row.id)
+
+    for key, row in existing_by_pair.items():
+        if key not in detected_pairs and row.status != "RESOLVED":
+            row.status = "RESOLVED"
+            resolved_ids.append(row.id)
+    for row in duplicate_rows:
+        if row.status != "RESOLVED":
+            row.status = "RESOLVED"
+            resolved_ids.append(row.id)
+
+    if commit:
         db.commit()
+    else:
+        db.flush()
 
-    return persisted
+    return ConflictRecheckResult(
+        active_conflict_ids=active_ids,
+        new_conflict_ids=new_ids,
+        resolved_conflict_ids=resolved_ids,
+    )

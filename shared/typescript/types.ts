@@ -45,10 +45,31 @@ export interface Claim {
   contradicting: string[];
 }
 
+export enum ClaimStatus {
+  UNVERIFIED = 'UNVERIFIED',
+  UNCONFIRMED = 'UNCONFIRMED',
+  CORROBORATED = 'CORROBORATED',
+  DISPUTED = 'DISPUTED',
+  CONFIRMED = 'CONFIRMED',
+  RESOLVED = 'RESOLVED',
+  REJECTED = 'REJECTED'
+}
+
+export enum EvidenceType {
+  SUPPORTING = 'supporting',
+  CONTRADICTING = 'contradicting'
+}
+
+export enum EvidenceTargetType {
+  CLAIM = 'claim',
+  HYPOTHESIS = 'hypothesis'
+}
+
 export interface Evidence {
   id: string;
-  claim_id: string;
-  type: string;
+  target_id: string;
+  target_type?: EvidenceTargetType;
+  type: EvidenceType;
   description: string;
   source: string;
 }
@@ -66,7 +87,7 @@ export interface Unknown {
   id: string;
   description: string;
   status: string;
-  linked_action_id?: string;
+  source_id?: string;
 }
 
 export interface Action {

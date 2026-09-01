@@ -49,6 +49,7 @@ sa.ARRAY = lambda item_type, *a, **kw: ArrayAsJSON()  # type: ignore[assignment]
 from app.database import Base
 from app.models import Claim, Hypothesis
 from app.services.claim_lifecycle import EvidenceInput, EvidenceType
+from app.schemas import EvidenceTargetType
 from app.services.contradiction_radar import ComparisonResult
 from app.services.event_store import process_transcript_chunk
 from app.services.evidence_graph import get_graph, get_provenance
@@ -191,7 +192,8 @@ def test_end_to_end_orchestration(mock_extract, db):
     # 3. Orchestrator ingests new evidence
     evidence1 = EvidenceInput(
         id=str(uuid.uuid4()),
-        claim_id="claim-db-cpu",
+        target_id="claim-db-cpu",
+        target_type=EvidenceTargetType.CLAIM,
         type=EvidenceType.SUPPORTING,
         description="Datadog dashboard confirms CPU is pegged at 100%.",
         source="Datadog"
@@ -209,7 +211,8 @@ def test_end_to_end_orchestration(mock_extract, db):
     # Add a second piece of supporting evidence to confirm it
     evidence2 = EvidenceInput(
         id=str(uuid.uuid4()),
-        claim_id="claim-db-cpu",
+        target_id="claim-db-cpu",
+        target_type=EvidenceTargetType.CLAIM,
         type=EvidenceType.SUPPORTING,
         description="AWS RDS console shows zero burst balance left.",
         source="AWS"
@@ -250,7 +253,8 @@ def test_end_to_end_orchestration(mock_extract, db):
     # Now someone adds evidence to this new claim
     evidence3 = EvidenceInput(
         id=str(uuid.uuid4()),
-        claim_id="claim-db-fine",
+        target_id="claim-db-fine",
+        target_type=EvidenceTargetType.CLAIM,
         type=EvidenceType.SUPPORTING,
         description="Health check is 200 OK.",
         source="Pingdom"
@@ -259,3 +263,18 @@ def test_end_to_end_orchestration(mock_extract, db):
     
     # The orchestrator should have flagged a conflict between claim-db-fine and claim-db-cpu
     assert len(result3.new_conflicts) == 1
+
+    # 8. Assert Final Incident State matches expected statuses
+    final_claim_cpu = db.query(Claim).filter(Claim.id == "claim-db-cpu").first()
+    assert final_claim_cpu.status == "CONFIRMED"
+
+    final_claim_fine = db.query(Claim).filter(Claim.id == "claim-db-fine").first()
+    assert final_claim_fine.status == "CORROBORATED"
+
+    final_hypo = db.query(Hypothesis).filter(Hypothesis.id == "hypo-pricing").first()
+    # It received no evidence so it should remain UNCONFIRMED.
+    assert final_hypo.status.name == "UNCONFIRMED"
+
+    # Ensure silence signal was removed for the confirmed claim
+    final_unknowns = scan_for_unresolved("INC-001", db, now=future_time, staleness_window_sec=600)
+    assert not any(a.source_id == "claim-db-cpu" for a in final_unknowns)

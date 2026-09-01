@@ -1,4 +1,5 @@
 from sqlalchemy import Column, String, Integer, Float, DateTime, Enum, ARRAY, ForeignKey, JSON
+from sqlalchemy.orm import synonym
 from app.database import Base
 import enum
 from datetime import datetime
@@ -56,7 +57,10 @@ class Claim(Base):
 class Evidence(Base):
     __tablename__ = "evidence"
     id = Column(String, primary_key=True, index=True)
-    claim_id = Column(String, nullable=False)
+    # ``claim_id`` is the legacy physical column name. Evidence may target a
+    # Claim or a Hypothesis, so services use the canonical ``target_id`` name.
+    target_id = Column("claim_id", String, nullable=False)
+    claim_id = synonym("target_id")
     type = Column(String)
     description = Column(String)
     source = Column(String)
@@ -75,7 +79,10 @@ class Unknown(Base):
     id = Column(String, primary_key=True, index=True)
     description = Column(String)
     status = Column(String)
-    linked_action_id = Column(String, nullable=True)
+    # Preserve the installed column while exposing what it actually represents:
+    # the claim or transcript event responsible for the silence signal.
+    source_id = Column("linked_action_id", String, nullable=True)
+    linked_action_id = synonym("source_id")
 
 class Action(Base):
     __tablename__ = "actions"

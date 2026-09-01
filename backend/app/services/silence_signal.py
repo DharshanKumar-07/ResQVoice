@@ -310,14 +310,22 @@ def scan_for_unresolved(
 
         unknown_alerts = detector.detect_unknowns_in_text(text, speaker, now=now)
         for alert in unknown_alerts:
-            # Persist an Unknown row
-            unknown_row = Unknown(
-                id=str(uuid.uuid4()),
-                description=alert.description,
-                status="OPEN",
-                linked_action_id=None,
+            # One transcript event must not create duplicate Unknown rows every
+            # time the periodic scan runs.
+            source_key = f"transcript:{event.id}:{alert.description}"
+            unknown_row = (
+                db.query(Unknown).filter(Unknown.source_id == source_key).first()
             )
-            db.add(unknown_row)
+            if unknown_row is None:
+                unknown_row = Unknown(
+                    id=str(uuid.uuid4()),
+                    description=alert.description,
+                    status="OPEN",
+                    source_id=source_key,
+                )
+                db.add(unknown_row)
+            elif unknown_row.status == "RESOLVED":
+                continue
             alert.source_id = unknown_row.id
             all_alerts.append(alert)
 
@@ -337,9 +345,72 @@ def scan_for_unresolved(
     ]
 
     stale_alerts = detector.detect_stale_criticals(claim_dicts, now=now)
+    for alert in stale_alerts:
+        # Persist the open silence condition with a canonical source_id so an
+        # evidence-ingestion transaction can explicitly reset it.
+        unknown_row = (
+            db.query(Unknown).filter(Unknown.source_id == alert.source_id).first()
+        )
+        if unknown_row is None:
+            db.add(Unknown(
+                id=str(uuid.uuid4()),
+                description=alert.description,
+                status="OPEN",
+                source_id=alert.source_id,
+            ))
+        elif unknown_row.status != "RESOLVED":
+            unknown_row.description = alert.description
+            unknown_row.status = "OPEN"
     all_alerts.extend(stale_alerts)
 
     if all_alerts:
         db.commit()
 
     return all_alerts
+
+
+def reset_silence_signal(
+    target_id: str,
+    db: Session,
+    *,
+    commit: bool = True,
+) -> bool:
+    """Resolve a persisted silence condition once its target has evidence.
+
+    Returns True when the claim/hypothesis no longer qualifies as silent,
+    whether or not a prior Unknown row existed.
+    """
+    from app.models import Claim, Hypothesis, Unknown
+
+    claim = db.query(Claim).filter(Claim.id == target_id).first()
+    hypothesis = db.query(Hypothesis).filter(Hypothesis.id == target_id).first()
+    if claim is None and hypothesis is None:
+        raise ValueError(f"Silence target '{target_id}' was not found.")
+
+    if claim is not None:
+        status = (claim.status or "UNVERIFIED").upper()
+        has_evidence = bool(claim.supporting or claim.contradicting)
+        resolved = has_evidence or status in {"CONFIRMED", "RESOLVED", "REJECTED"}
+    else:
+        raw_status = str(hypothesis.status or "UNCONFIRMED").split(".")[-1].upper()
+        has_evidence = bool(
+            hypothesis.supporting_evidence or hypothesis.contradicting_evidence
+        )
+        resolved = has_evidence or raw_status in {"CONFIRMED", "REJECTED"}
+
+    if not resolved:
+        return False
+
+    open_rows = (
+        db.query(Unknown)
+        .filter(Unknown.source_id == target_id, Unknown.status == "OPEN")
+        .all()
+    )
+    for row in open_rows:
+        row.status = "RESOLVED"
+
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return True

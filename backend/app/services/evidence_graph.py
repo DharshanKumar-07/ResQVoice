@@ -19,12 +19,13 @@ This service is read-only and does not modify any database state.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.models import Claim, Evidence, Hypothesis
+from app.schemas import EvidenceType
 
 
 # ── Public I/O models ─────────────────────────────────────────────────────────
@@ -32,7 +33,7 @@ from app.models import Claim, Evidence, Hypothesis
 class EvidenceView(BaseModel):
     """A view of an Evidence record."""
     id: str
-    type: str  # "supporting" or "contradicting"
+    type: EvidenceType
     description: str
     source: str
 
@@ -56,6 +57,7 @@ class GraphNode(BaseModel):
     type: Literal["claim", "hypothesis", "evidence"]
     status: Optional[str] = None
     speaker: Optional[str] = None
+    source: Optional[str] = None
 
 
 class GraphEdge(BaseModel):
@@ -73,22 +75,22 @@ class GraphData(BaseModel):
 
 # ── Core Service ──────────────────────────────────────────────────────────────
 
-def get_provenance(claim_id: str, db: Session) -> ProvenanceTrace:
+def get_provenance(target_id: str, db: Session) -> ProvenanceTrace:
     """
     Retrieve the provenance trace for a given Claim or Hypothesis ID.
     Raises ValueError if not found.
     """
     # Try Claim first
-    claim = db.query(Claim).filter(Claim.id == claim_id).first()
+    claim = db.query(Claim).filter(Claim.id == target_id).first()
     if claim:
         return _build_claim_provenance(claim, db)
 
     # Try Hypothesis
-    hypo = db.query(Hypothesis).filter(Hypothesis.id == claim_id).first()
+    hypo = db.query(Hypothesis).filter(Hypothesis.id == target_id).first()
     if hypo:
         return _build_hypothesis_provenance(hypo, db)
 
-    raise ValueError(f"No Claim or Hypothesis found with ID '{claim_id}'")
+    raise ValueError(f"No Claim or Hypothesis found with ID '{target_id}'")
 
 
 def get_graph(db: Session, incident_id: Optional[str] = None) -> GraphData:
@@ -148,7 +150,7 @@ def get_graph(db: Session, incident_id: Optional[str] = None) -> GraphData:
         relation: Literal["supports", "contradicts"] = "supports" if e.type == "supporting" else "contradicts"
         edges.append(GraphEdge(
             source=e.id,
-            target=e.claim_id,
+            target=e.target_id,
             relation=relation,
         ))
 
@@ -172,11 +174,11 @@ def _build_claim_provenance(claim: Claim, db: Session) -> ProvenanceTrace:
         timestamp=claim.timestamp,
         status=claim.status or "UNVERIFIED",
         supporting_evidence=[
-            EvidenceView(id=e.id, type="supporting", description=e.description or "", source=e.source or "")
+            EvidenceView(id=e.id, type=EvidenceType.SUPPORTING, description=e.description or "", source=e.source or "")
             for e in sup_ev
         ],
         contradicting_evidence=[
-            EvidenceView(id=e.id, type="contradicting", description=e.description or "", source=e.source or "")
+            EvidenceView(id=e.id, type=EvidenceType.CONTRADICTING, description=e.description or "", source=e.source or "")
             for e in con_ev
         ],
     )
@@ -201,11 +203,11 @@ def _build_hypothesis_provenance(hypo: Hypothesis, db: Session) -> ProvenanceTra
         timestamp=None,  # Hypotheses in this schema don't have a timestamp
         status=status_str or "UNCONFIRMED",
         supporting_evidence=[
-            EvidenceView(id=e.id, type="supporting", description=e.description or "", source=e.source or "")
+            EvidenceView(id=e.id, type=EvidenceType.SUPPORTING, description=e.description or "", source=e.source or "")
             for e in sup_ev
         ],
         contradicting_evidence=[
-            EvidenceView(id=e.id, type="contradicting", description=e.description or "", source=e.source or "")
+            EvidenceView(id=e.id, type=EvidenceType.CONTRADICTING, description=e.description or "", source=e.source or "")
             for e in con_ev
         ],
     )

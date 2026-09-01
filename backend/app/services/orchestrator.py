@@ -12,27 +12,35 @@ Public API
 """
 from __future__ import annotations
 
-import uuid
-from typing import List, Optional
+from typing import List
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.models import Claim, Conflict, Evidence, Hypothesis
+from app.models import Claim, Evidence, Hypothesis
+from app.schemas import EvidenceTargetType
 from app.services.claim_lifecycle import (
     ClaimStatusUpdate,
     EvidenceInput,
     apply_evidence,
     apply_evidence_to_hypothesis,
 )
-from app.services.contradiction_radar import ClaimSnapshot, detect_conflicts
+from app.services.contradiction_radar import ClaimSnapshot, recheck_conflicts
+from app.services.evidence_graph import GraphData, ProvenanceTrace, get_graph, get_provenance
+from app.services.silence_signal import reset_silence_signal
 
 
 class OrchestrationResult(BaseModel):
     """Result of an evidence ingestion flow."""
     evidence_id: str
+    target_id: str
+    target_type: EvidenceTargetType
     lifecycle_update: ClaimStatusUpdate
-    new_conflicts: List[str]  # IDs of any new Conflict records created
+    new_conflicts: List[str]
+    resolved_conflicts: List[str]
+    evidence_graph: GraphData
+    provenance: ProvenanceTrace
+    silence_reset: bool
 
 
 def ingest_evidence(
@@ -47,52 +55,97 @@ def ingest_evidence(
     1. Persist Evidence.
     2. Route to claim_lifecycle for state machine transition.
     3. If target was a Claim, re-evaluate contradiction_radar.
-    4. Evidence Graph naturally reflects the new Evidence row.
-    5. Silence Signal naturally resets for this claim as it is no longer unevidenced
-       and may enter a terminal state.
+    4. Materialize and verify the updated Evidence Graph view.
+    5. Explicitly reset any persisted silence condition now resolved by evidence.
+
+    All writes commit together. A failure in any stage rolls back the Evidence,
+    lifecycle, conflict, and silence mutations.
     """
-    # 1. Persist Evidence
-    ev_row = Evidence(
-        id=evidence.id,
-        claim_id=evidence.claim_id,
-        type=evidence.type.value if hasattr(evidence.type, "value") else str(evidence.type),
-        description=evidence.description,
-        source=evidence.source,
+    if db.query(Evidence).filter(Evidence.id == evidence.id).first() is not None:
+        raise ValueError(f"Evidence '{evidence.id}' already exists.")
+
+    claim_row = db.query(Claim).filter(Claim.id == evidence.target_id).first()
+    hypothesis_row = (
+        db.query(Hypothesis).filter(Hypothesis.id == evidence.target_id).first()
     )
-    db.add(ev_row)
-    db.commit()
+    if claim_row is not None and hypothesis_row is not None:
+        raise ValueError(
+            f"Target '{evidence.target_id}' is ambiguous across Claims and Hypotheses."
+        )
+    if claim_row is None and hypothesis_row is None:
+        raise ValueError(
+            f"Target '{evidence.target_id}' not found in Claims or Hypotheses."
+        )
 
-    # 2. Claim Lifecycle
-    # Determine if target is Claim or Hypothesis
-    is_claim = db.query(Claim).filter(Claim.id == evidence.claim_id).count() > 0
-    is_hypo = db.query(Hypothesis).filter(Hypothesis.id == evidence.claim_id).count() > 0
+    target_type = (
+        EvidenceTargetType.CLAIM if claim_row is not None else EvidenceTargetType.HYPOTHESIS
+    )
+    if evidence.target_type is not None and evidence.target_type != target_type:
+        raise ValueError(
+            f"Evidence target_type '{evidence.target_type.value}' does not match "
+            f"the stored {target_type.value}."
+        )
 
-    if is_claim:
-        update = apply_evidence(evidence.claim_id, evidence, db)
-    elif is_hypo:
-        update = apply_evidence_to_hypothesis(evidence.claim_id, evidence, db)
-    else:
-        raise ValueError(f"Target '{evidence.claim_id}' not found in Claims or Hypotheses.")
+    try:
+        # 1. Persist Evidence against the shared canonical target field.
+        ev_row = Evidence(
+            id=evidence.id,
+            target_id=evidence.target_id,
+            type=evidence.type.value,
+            description=evidence.description,
+            source=evidence.source,
+        )
+        db.add(ev_row)
+        db.flush()
 
-    new_conflict_ids = []
+        # 2. Apply the lifecycle transition without an intermediate commit.
+        if claim_row is not None:
+            update = apply_evidence(
+                evidence.target_id, evidence, db, commit=False
+            )
+        else:
+            update = apply_evidence_to_hypothesis(
+                evidence.target_id, evidence, db, commit=False
+            )
 
-    # 3. Contradiction Radar Re-check
-    # Only re-check if it's a Claim (contradiction_radar currently scans Claims).
-    if is_claim:
-        claim_row = db.query(Claim).filter(Claim.id == evidence.claim_id).first()
-        if claim_row:
+        # 3. Re-check contradictions and upsert/resolve affected pairs.
+        new_conflict_ids: list[str] = []
+        resolved_conflict_ids: list[str] = []
+        if claim_row is not None:
             snapshot = ClaimSnapshot(
                 id=claim_row.id,
                 text=claim_row.text or "",
                 speaker=claim_row.speaker or "",
                 role=claim_row.role or "",
             )
-            # Scan against the updated claim
-            conflicts = detect_conflicts(snapshot, db, comparator=comparator)
-            new_conflict_ids = [c.id for c in conflicts]
+            conflict_result = recheck_conflicts(
+                snapshot, db, comparator=comparator, commit=False
+            )
+            new_conflict_ids = conflict_result.new_conflict_ids
+            resolved_conflict_ids = conflict_result.resolved_conflict_ids
 
-    return OrchestrationResult(
-        evidence_id=ev_row.id,
-        lifecycle_update=update,
-        new_conflicts=new_conflict_ids,
-    )
+        # 4. Evidence graph is a materialized read view; constructing it here
+        # verifies that this same transaction exposes the new node and edge.
+        graph = get_graph(db)
+        provenance = get_provenance(evidence.target_id, db)
+
+        # 5. Evidence means this target is no longer silent.
+        silence_reset = reset_silence_signal(
+            evidence.target_id, db, commit=False
+        )
+        db.commit()
+
+        return OrchestrationResult(
+            evidence_id=ev_row.id,
+            target_id=evidence.target_id,
+            target_type=target_type,
+            lifecycle_update=update,
+            new_conflicts=new_conflict_ids,
+            resolved_conflicts=resolved_conflict_ids,
+            evidence_graph=graph,
+            provenance=provenance,
+            silence_reset=silence_reset,
+        )
+    except Exception:
+        db.rollback()
+        raise

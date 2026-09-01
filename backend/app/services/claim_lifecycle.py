@@ -32,11 +32,11 @@ instantiated and tested in complete isolation.
 """
 from __future__ import annotations
 
-from enum import Enum
-from typing import Literal
-
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
+
+from app.schemas import Evidence as EvidenceInput
+from app.schemas import EvidenceType
 
 
 # ---------------------------------------------------------------------------
@@ -55,30 +55,22 @@ HYPOTHESIS_TERMINAL_STATUSES = {"CONFIRMED", "REJECTED"}
 
 
 # ---------------------------------------------------------------------------
-# Public I/O models
+# Public I/O model
 # ---------------------------------------------------------------------------
-
-class EvidenceType(str, Enum):
-    SUPPORTING = "supporting"
-    CONTRADICTING = "contradicting"
-
-
-class EvidenceInput(BaseModel):
-    """Evidence piece to apply to a claim or hypothesis."""
-    id: str
-    claim_id: str                    # claim_id or hypothesis_id depending on context
-    type: EvidenceType               # "supporting" | "contradicting"
-    description: str
-    source: str
-
 
 class ClaimStatusUpdate(BaseModel):
     """Result returned by apply_evidence / apply_evidence_to_hypothesis."""
-    claim_id: str
+    model_config = ConfigDict(populate_by_name=True)
+
+    target_id: str = Field(validation_alias=AliasChoices("target_id", "claim_id"))
     previous_status: str
     new_status: str
     changed: bool
     reason: str
+
+    @property
+    def claim_id(self) -> str:
+        return self.target_id
 
 
 # ---------------------------------------------------------------------------
@@ -117,16 +109,6 @@ class ClaimLifecycleEngine:
         prev = self.current_status
         ev_type = evidence.type
 
-        # ── Terminal guard ──────────────────────────────────────────────────
-        if self.current_status in self.terminal_statuses:
-            return ClaimStatusUpdate(
-                claim_id=evidence.claim_id,
-                previous_status=prev,
-                new_status=prev,
-                changed=False,
-                reason=f"Status '{prev}' is terminal; no transition possible.",
-            )
-
         # ── Append evidence to the running lists ────────────────────────────
         if ev_type == EvidenceType.SUPPORTING:
             if evidence.id not in self.supporting:
@@ -134,6 +116,17 @@ class ClaimLifecycleEngine:
         else:
             if evidence.id not in self.contradicting:
                 self.contradicting.append(evidence.id)
+
+        # Terminal status prevents a transition, not provenance. The evidence
+        # row and entity arrays must stay aligned for evidence_graph.
+        if self.current_status in self.terminal_statuses:
+            return ClaimStatusUpdate(
+                target_id=evidence.target_id,
+                previous_status=prev,
+                new_status=prev,
+                changed=False,
+                reason=f"Status '{prev}' is terminal; evidence recorded without a transition.",
+            )
 
         n_sup = len(self.supporting)
         n_con = len(self.contradicting)
@@ -143,7 +136,7 @@ class ClaimLifecycleEngine:
 
         self.current_status = new_status
         return ClaimStatusUpdate(
-            claim_id=evidence.claim_id,
+            target_id=evidence.target_id,
             previous_status=prev,
             new_status=new_status,
             changed=(new_status != prev),
@@ -230,6 +223,8 @@ def apply_evidence(
     claim_id: str,
     evidence: EvidenceInput,
     db: Session,
+    *,
+    commit: bool = True,
 ) -> ClaimStatusUpdate:
     """
     Apply `evidence` to a Claim row in the Incident State store.
@@ -246,6 +241,8 @@ def apply_evidence(
     claim = db.query(Claim).filter(Claim.id == claim_id).first()
     if claim is None:
         raise ValueError(f"Claim '{claim_id}' not found in the Incident State store.")
+    if evidence.target_id != claim_id:
+        raise ValueError("Evidence target_id does not match the requested Claim.")
 
     engine = ClaimLifecycleEngine(
         current_status=claim.status or "UNVERIFIED",
@@ -261,7 +258,10 @@ def apply_evidence(
     claim.supporting = engine.supporting
     claim.contradicting = engine.contradicting
     db.add(claim)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(claim)
 
     return update
@@ -271,6 +271,8 @@ def apply_evidence_to_hypothesis(
     hypothesis_id: str,
     evidence: EvidenceInput,
     db: Session,
+    *,
+    commit: bool = True,
 ) -> ClaimStatusUpdate:
     """
     Apply `evidence` to a Hypothesis row in the Incident State store.
@@ -286,6 +288,8 @@ def apply_evidence_to_hypothesis(
     hypo = db.query(Hypothesis).filter(Hypothesis.id == hypothesis_id).first()
     if hypo is None:
         raise ValueError(f"Hypothesis '{hypothesis_id}' not found.")
+    if evidence.target_id != hypothesis_id:
+        raise ValueError("Evidence target_id does not match the requested Hypothesis.")
 
     # SQLAlchemy may serialize the Enum as "HYPOTHESISSTATUS.DISPUTED" in
     # SQLite; strip the type-prefix so the engine sees a plain value.
@@ -307,7 +311,10 @@ def apply_evidence_to_hypothesis(
     hypo.supporting_evidence = engine.supporting
     hypo.contradicting_evidence = engine.contradicting
     db.add(hypo)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(hypo)
 
     return update
