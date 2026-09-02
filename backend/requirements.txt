@@ -9,3 +9,4 @@ instructor
 agora-token-builder
 python-multipart
 aiolimiter
+python-dotenv

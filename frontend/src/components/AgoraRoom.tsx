@@ -416,18 +416,18 @@ export default function AgoraRoom() {
 
             <div className="voice-session">
               <div className="voice-session-identity">
-                <div className="pulse-dot" />
+                <div className={!isMuted ? "pulse-dot" : ""} style={isMuted ? { width: 8, height: 8, borderRadius: '50%', background: 'var(--text-muted)' } : {}} />
                 <div>
                   <div className="voice-session-title">
                     {fallbackMode ? (
                       <>
-                        <AlertCircle size={14} aria-hidden="true" />
+                        <AlertCircle size={16} aria-hidden="true" />
                         <span>Demo Mode: {speaker}</span>
                       </>
                     ) : (
                       <>
-                        <CheckCircle2 size={14} aria-hidden="true" />
-                        <span>Connected: {speaker} (uid: {joinedUid})</span>
+                        <CheckCircle2 size={16} aria-hidden="true" style={{ color: 'var(--status-confirmed)' }} />
+                        <span>Connected: {speaker} <span style={{ color: 'var(--text-muted)', fontSize: 12, fontWeight: 400 }}>(uid: {joinedUid})</span></span>
                       </>
                     )}
                   </div>
@@ -441,12 +441,12 @@ export default function AgoraRoom() {
               <div className="voice-actions">
                 {!fallbackMode && (
                   <div className="participant-count" title="Connected participants">
-                    <Users size={14} aria-hidden="true" />
+                    <Users size={15} aria-hidden="true" />
                     <span>{1 + remoteUsers.length}</span>
                   </div>
                 )}
                 <button className="btn btn-secondary" onClick={toggleMute}>
-                  {isMuted ? <MicOff size={15} aria-hidden="true" /> : <Mic size={15} aria-hidden="true" />}
+                  {isMuted ? <MicOff size={16} aria-hidden="true" /> : <Mic size={16} aria-hidden="true" />}
                   <span>{isMuted ? 'Unmute' : 'Mute'}</span>
                 </button>
                 <button className="btn btn-danger" onClick={leaveRoom}>
@@ -457,8 +457,22 @@ export default function AgoraRoom() {
 
             <div className="stream-section">
               <div className="stream-heading">
-                <Volume2 size={15} aria-hidden="true" />
-                <span>Live Speech Recognition Stream</span>
+                <div className="stream-heading-title">
+                  <Volume2 size={16} aria-hidden="true" />
+                  <span>Live Speech Recognition</span>
+                </div>
+                {!isMuted && (
+                  <div className="stream-indicator">
+                    <span>Listening...</span>
+                    <div className={`waveform-container ${isMuted ? 'muted' : ''}`}>
+                      <div className="waveform-bar" />
+                      <div className="waveform-bar" />
+                      <div className="waveform-bar" />
+                      <div className="waveform-bar" />
+                      <div className="waveform-bar" />
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="stream-window" aria-live="polite">
                 {transcript.length === 0 ? (
@@ -470,8 +484,14 @@ export default function AgoraRoom() {
                 ) : (
                   transcript.map(item => (
                     <div key={item.id} className="stream-row">
-                      <span className="stream-speaker">{item.speaker}</span>{' '}
-                      <span className="stream-role">({item.role})</span>: {item.text}
+                      <div>
+                        <span className="stream-speaker">{item.speaker}</span>
+                        <span className="stream-role">({item.role})</span>
+                        <span style={{ float: 'right', color: 'var(--text-muted)', fontSize: 11, fontFamily: 'var(--font-mono)' }}>
+                          {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                        </span>
+                      </div>
+                      <span className="stream-text">{item.text}</span>
                     </div>
                   ))
                 )}
