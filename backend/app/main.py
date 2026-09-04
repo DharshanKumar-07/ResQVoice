@@ -78,6 +78,7 @@ app = FastAPI(title="ResQVoice Backend")
 
 
 @app.get("/healthz", tags=["Operations"])
+@app.get("/health", tags=["Operations"], include_in_schema=False)
 def deployment_health() -> JSONResponse:
     """Render/readiness probe: process is live and PostgreSQL is reachable."""
     try:
@@ -123,7 +124,9 @@ from app.integrations.agora_conversational_ai import (
 )
 
 
-_cors_raw = os.environ.get("CORS_ALLOW_ORIGINS", "*").strip()
+_cors_raw = os.environ.get(
+    "CORS_ALLOW_ORIGINS", "http://localhost:5173,http://localhost:3000"
+).strip()
 _cors_origins: list[str] = (
     [o.strip() for o in _cors_raw.split(",") if o.strip()]
     if _cors_raw != "*"
@@ -133,7 +136,10 @@ _cors_origins: list[str] = (
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=True,
+    # The API authenticates Agora webhooks with a bearer secret and does not use
+    # browser cookies. Keeping this false makes an explicit origin allowlist
+    # work correctly and avoids the invalid wildcard-plus-credentials pairing.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Retry-After"],

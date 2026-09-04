@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
+import { BACKEND_URL } from '../lib/backend';
 import {
   Activity,
   AlertOctagon,
@@ -111,8 +112,8 @@ export default function Dashboard() {
   const fetchState = async () => {
     try {
       const [stateResponse, transcriptResponse] = await Promise.all([
-        axios.get('http://localhost:8000/api/state'),
-        axios.get<TranscriptEvent[]>('http://localhost:8000/api/transcripts', {
+        axios.get(`${BACKEND_URL}/api/state`),
+        axios.get<TranscriptEvent[]>(`${BACKEND_URL}/api/transcripts`, {
           params: { limit: 50 },
         }),
       ]);
@@ -132,7 +133,7 @@ export default function Dashboard() {
       setError(null);
     } catch (fetchError) {
       console.error('Failed to fetch incident state:', fetchError);
-      setError('Unable to connect to the command engine at localhost:8000.');
+      setError(`Unable to connect to the command engine at ${BACKEND_URL}.`);
     } finally {
       setLoading(false);
     }
@@ -147,7 +148,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    const eventSource = new EventSource('http://localhost:8000/api/transcripts/stream');
+    const eventSource = new EventSource(`${BACKEND_URL}/api/transcripts/stream`);
     eventSource.onmessage = event => {
       try {
         const transcript = JSON.parse(event.data) as TranscriptEvent;
@@ -177,7 +178,7 @@ export default function Dashboard() {
 
     setIsResetting(true);
     try {
-      await axios.post('http://localhost:8000/api/workspace/reset');
+      await axios.post(`${BACKEND_URL}/api/workspace/reset`);
       setUseMockData(false);
       setState(EMPTY_STATE);
       await fetchState();
@@ -198,7 +199,7 @@ export default function Dashboard() {
     setBusyDecisionId('recommend');
     try {
       const response = await axios.post<SafetyRecommendation>(
-        'http://localhost:8000/api/safety/recommend',
+        `${BACKEND_URL}/api/safety/recommend`,
         {
           proposed_action: proposedAction,
           evidence: lines(actionEvidence),
@@ -218,7 +219,7 @@ export default function Dashboard() {
   const advanceDecision = async (decision: Decision, operation: 'approve' | 'execute' | 'verify') => {
     setBusyDecisionId(decision.id);
     try {
-      const base = `http://localhost:8000/api/safety/decisions/${decision.id}`;
+      const base = `${BACKEND_URL}/api/safety/decisions/${decision.id}`;
       if (operation === 'approve') {
         await axios.post(`${base}/approve`, { approved_by: approverName });
       } else if (operation === 'execute') {

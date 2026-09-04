@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import { BACKEND_URL } from '../lib/backend';
 import { Mic, MicOff, Radio, Volume2, AlertCircle, CheckCircle2, Users } from 'lucide-react';
 import { useAgoraIncidentRoom } from '../hooks/useAgoraIncidentRoom';
 import type { TranscriptEvent } from '../types';
@@ -11,7 +12,6 @@ const ROLES = [
   "Product Manager", "Business Stakeholder"
 ];
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000';
 const CHANNEL_NAME = 'incident-room';
 
 installAgoraWebRtcCompatibility();

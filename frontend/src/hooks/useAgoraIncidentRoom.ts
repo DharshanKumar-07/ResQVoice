@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import AgoraRTC from 'agora-rtc-sdk-ng';
 import type { IAgoraRTCClient, IMicrophoneAudioTrack, IRemoteAudioTrack } from 'agora-rtc-sdk-ng';
+import { BACKEND_URL } from '../lib/backend';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000';
 const AGORA_JOIN_TIMEOUT_MS = 20_000;
 const AGENT_UID = Number(import.meta.env.VITE_AGORA_AGENT_UID ?? 1000);
 const RTC_UID_STORAGE_KEY = 'resqvoice-rtc-uid';

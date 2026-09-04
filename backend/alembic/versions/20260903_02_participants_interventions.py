@@ -18,7 +18,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    existing_tables = set(sa.inspect(op.get_bind()).get_table_names())
+    if "participants" not in existing_tables:
+        op.create_table(
         "participants",
         sa.Column("agora_uid", sa.String(), nullable=False),
         sa.Column("channel", sa.String(), nullable=False),
@@ -27,8 +29,9 @@ def upgrade() -> None:
         sa.Column("role", sa.String(), nullable=False),
         sa.Column("participant_type", sa.String(), nullable=False),
         sa.PrimaryKeyConstraint("agora_uid", "channel"),
-    )
-    op.create_table(
+        )
+    if "interventions" not in existing_tables:
+        op.create_table(
         "interventions",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("trigger_type", sa.String(), nullable=False),
@@ -42,9 +45,14 @@ def upgrade() -> None:
         sa.Column("status", sa.String(), nullable=False),
         sa.Column("agent_id", sa.String(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_interventions_trigger_type", "interventions", ["trigger_type"])
-    op.create_index("ix_interventions_status", "interventions", ["status"])
+        )
+    intervention_indexes = {
+        index["name"] for index in sa.inspect(op.get_bind()).get_indexes("interventions")
+    }
+    if "ix_interventions_trigger_type" not in intervention_indexes:
+        op.create_index("ix_interventions_trigger_type", "interventions", ["trigger_type"])
+    if "ix_interventions_status" not in intervention_indexes:
+        op.create_index("ix_interventions_status", "interventions", ["status"])
 
 
 def downgrade() -> None:

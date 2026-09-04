@@ -62,18 +62,42 @@ Set `MOCK_AGORA_AGENT=true` to test the local room UI without creating an Agora
 cloud agent. The legacy Groq upload endpoint remains temporarily available for
 older clients, but the incident-room hook no longer calls it.
 
-## Stable HTTPS Callback
+## Render deployment
+
+[`render.yaml`](/Users/dharshankumar/.gemini/antigravity-ide/scratch/ResQVoice/render.yaml)
+defines the FastAPI web service and a managed Render Postgres database. It uses
+`preDeployCommand: alembic upgrade head`, binds Uvicorn to Render's `$PORT`,
+exposes `/health`, and sets `AGORA_PUBLIC_BASE_URL` from Render's stable
+`RENDER_EXTERNAL_HOSTNAME`. No tunnel URL is committed or required.
+
+During the initial Blueprint import, Render prompts for these values:
+
+- `GEMINI_API_KEY`, `GROQ_API_KEY`
+- `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE`
+- `AGORA_CUSTOMER_ID`, `AGORA_CUSTOMER_SECRET`, `AGORA_WEBHOOK_SECRET`
+- `CORS_ALLOW_ORIGINS` — for example
+  `http://localhost:5173,http://localhost:3000,https://your-frontend.example`
+
+The Render-managed `DATABASE_URL` is injected automatically; do not set it to
+a local URL. For a hosted frontend, set its build-time
+`VITE_BACKEND_URL=https://<your-render-service>.onrender.com` and include that
+frontend's origin in `CORS_ALLOW_ORIGINS`. The incident-state WebSocket is
+`wss://<your-render-service>.onrender.com/api/agora-agent/state/ws` and is
+derived automatically by the frontend hook from `VITE_BACKEND_URL`.
+
+The checked-in Blueprint intentionally uses Render's free development plans.
+They retain an assigned `onrender.com` hostname, but a free web service spins
+down after 15 minutes without inbound HTTP or WebSocket traffic and can take
+about a minute to wake. A free Render Postgres database expires after 30 days.
+Use paid Render compute and Postgres only if always-on availability and durable
+database retention are required.
+
+## Callback health
 
 Agent startup performs an application-level check against
 `/api/agora-agent/health` and requires the exact ResQVoice response signature
-before returning a ready session. `/healthz` additionally checks database
-readiness for deployment platforms.
-
-For a zero-service-cost stable hostname, use a named Cloudflare Tunnel attached
-to a domain in your Cloudflare account and set `AGORA_PUBLIC_BASE_URL` to that
-HTTPS origin. The computer running FastAPI and the tunnel must remain online.
-Anonymous quick tunnels and localhost.run free hostnames are intentionally not
-treated as stable because their hostnames can rotate.
+before returning a ready session. `/health` and `/healthz` additionally check
+database readiness for deployment platforms.
 
 ### 3. Frontend (React + Vite)
 
