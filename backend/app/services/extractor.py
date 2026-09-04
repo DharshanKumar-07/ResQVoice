@@ -1,3 +1,4 @@
+import asyncio
 import os
 from google import genai
 from pydantic import BaseModel, Field
@@ -7,6 +8,18 @@ from app.services.provider_metrics import PROVIDER_REQUESTS
 
 
 NO_PROVIDER_RETRIES = {"retry_options": {"attempts": 1}}
+
+
+def is_transient_provider_error(exc: Exception) -> bool:
+    """Identify temporary model capacity/network failures worth retrying."""
+    code = getattr(exc, "code", None)
+    if code in {429, 500, 502, 503, 504}:
+        return True
+    message = str(exc).upper()
+    return any(marker in message for marker in (
+        "429", "500", "502", "503", "504", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
+        "HIGH DEMAND", "RATE LIMIT", "TIMEOUT",
+    ))
 
 class TranscriptSegment(BaseModel):
     segment_id: int
@@ -153,16 +166,29 @@ async def extract_claims_batch_async(segments: List[TranscriptSegment]) -> Extra
         )
         + "\n\nExtract relevant entities and attach each to its supporting segment_id."
     )
-    PROVIDER_REQUESTS.record("gemini")
-    response = await client.aio.models.generate_content(
-        model=os.environ.get("GEMINI_EXTRACTION_MODEL", "gemini-3.5-flash-lite"),
-        contents=prompt,
-        config={
-            "system_instruction": SYSTEM_PROMPT,
-            "response_mime_type": "application/json",
-            "response_schema": _BatchedModelOutput,
-        },
-    )
+    model = os.environ.get("GEMINI_EXTRACTION_MODEL", "gemini-3.5-flash-lite")
+    response = None
+    for attempt in range(3):
+        try:
+            PROVIDER_REQUESTS.record("gemini")
+            response = await client.aio.models.generate_content(
+                model=model,
+                contents=prompt,
+                config={
+                    "system_instruction": SYSTEM_PROMPT,
+                    "response_mime_type": "application/json",
+                    "response_schema": _BatchedModelOutput,
+                },
+            )
+            break
+        except Exception as exc:
+            if not is_transient_provider_error(exc) or attempt == 2:
+                raise
+            # Bounded exponential backoff prevents a temporary provider spike
+            # from discarding an entire attributed extraction batch.
+            await asyncio.sleep(2 ** attempt)
+    if response is None:  # Defensive: the retry loop either returns or raises.
+        raise RuntimeError("Gemini extraction produced no response")
 
     if hasattr(response, "parsed") and response.parsed:
         raw = response.parsed

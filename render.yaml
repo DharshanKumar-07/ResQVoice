@@ -81,6 +81,10 @@ services:
         value: "30"
       - key: EXTRACTION_BATCH_MAX_WAIT_SECONDS
         value: "20"
+      - key: EXTRACTION_BATCH_RETRY_ATTEMPTS
+        value: "2"
+      - key: EXTRACTION_BATCH_RETRY_DELAY_SECONDS
+        value: "3"
       - key: INTERVENTION_PERIODIC_SUMMARY_SECONDS
         value: "300"
       - key: INTERVENTION_HIGH_PRIORITY_MODE

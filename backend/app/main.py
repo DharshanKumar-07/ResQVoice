@@ -39,7 +39,11 @@ from app.services.event_store import (
     persist_transcript_chunk,
     project_extracted_data,
 )
-from app.services.extractor import TranscriptSegment, extract_claims_batch_async
+from app.services.extractor import (
+    TranscriptSegment,
+    extract_claims_batch_async,
+    is_transient_provider_error,
+)
 from app.services.extraction_batcher import ExtractionBatcher
 from app.services.provider_metrics import PROVIDER_REQUESTS
 from app.services.transcript_stream import TRANSCRIPT_BROADCASTER
@@ -211,8 +215,9 @@ def _transcript_payload(event: EventLog, speaker: str, role: str, text: str, tim
 # ---------------------------------------------------------------------------
 
 async def _extract_transcript_batch_background(
-    segments: list[TranscriptSegment], generation: int
+    segments: list[TranscriptSegment], generation: int, retry_attempt: int = 0,
 ):
+    retry_delay_seconds: float | None = None
     try:
         extracted = await extract_claims_batch_async(segments)
         db = SessionLocal()
@@ -285,9 +290,32 @@ async def _extract_transcript_batch_background(
         if "db" in locals():
             db.rollback()
         log_event("EXTRACTION_BATCH_FAILED", error_type=type(exc).__name__, message=str(exc)[:300])
+        try:
+            max_retries = max(0, int(os.getenv("EXTRACTION_BATCH_RETRY_ATTEMPTS", "2")))
+            base_delay = max(0.1, float(os.getenv("EXTRACTION_BATCH_RETRY_DELAY_SECONDS", "3")))
+        except ValueError:
+            max_retries, base_delay = 2, 3.0
+        if (
+            generation == WORKSPACE_GENERATION
+            and retry_attempt < max_retries
+            and is_transient_provider_error(exc)
+        ):
+            retry_delay_seconds = base_delay * (2 ** retry_attempt)
+            log_event(
+                "EXTRACTION_BATCH_RETRY_SCHEDULED",
+                attempt=retry_attempt + 1,
+                delay_seconds=retry_delay_seconds,
+                segments=len(segments),
+            )
     finally:
         if "db" in locals():
             db.close()
+    if retry_delay_seconds is not None:
+        await asyncio.sleep(retry_delay_seconds)
+        if generation == WORKSPACE_GENERATION:
+            return await _extract_transcript_batch_background(
+                segments, generation, retry_attempt + 1
+            )
     # A completed batch may have created a queued intervention. Dispatching is
     # still gated by human-activity, cooldown, and rate-window policy.
     if generation == WORKSPACE_GENERATION:
