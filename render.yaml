@@ -61,10 +61,10 @@ services:
         sync: false
       - key: AGORA_WEBHOOK_SECRET
         sync: false
-      # Comma-separated browser origins. Include the hosted frontend URL after
-      # it exists, plus localhost origins for local development.
+      # Comma-separated browser origins. Add the hosted frontend URL here when
+      # it exists; local Vite origins are included for development.
       - key: CORS_ALLOW_ORIGINS
-        sync: false
+        value: http://localhost:5173,http://127.0.0.1:5174,http://localhost:3000
 
       # Non-secret operational configuration.
       - key: GROQ_TRANSCRIPTION_MODEL
