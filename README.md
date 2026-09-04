@@ -65,8 +65,9 @@ older clients, but the incident-room hook no longer calls it.
 ## Render deployment
 
 [`render.yaml`](/Users/dharshankumar/.gemini/antigravity-ide/scratch/ResQVoice/render.yaml)
-defines the FastAPI web service and a managed Render Postgres database. It uses
-`preDeployCommand: alembic upgrade head`, binds Uvicorn to Render's `$PORT`,
+defines the FastAPI web service and a managed Render Postgres database. It runs
+`alembic upgrade head` before Uvicorn (compatible with Render's free plan),
+binds Uvicorn to Render's `$PORT`,
 exposes `/health`, and sets `AGORA_PUBLIC_BASE_URL` from Render's stable
 `RENDER_EXTERNAL_HOSTNAME`. No tunnel URL is committed or required.
 
