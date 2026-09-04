@@ -8,7 +8,9 @@
 databases:
   - name: resqvoice-postgres
     plan: free
-    region: singapore
+    # Must match the existing web service's immutable region so the managed
+    # database is reachable over Render's private network.
+    region: oregon
     databaseName: resqvoice
     user: resqvoice
 
@@ -17,7 +19,7 @@ services:
     name: resqvoice-api
     runtime: python
     plan: free
-    region: singapore
+    region: oregon
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     # Free Render services do not support preDeployCommand. Run the idempotent
