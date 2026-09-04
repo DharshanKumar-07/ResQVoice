@@ -1,0 +1,64 @@
+# Render Blueprint — ResQVoice Backend
+# https://render.com/docs/blueprint-spec
+#
+# Deploy steps:
+#   1. Push this repo to GitHub.
+#   2. In Render Dashboard → New → Blueprint → connect repo.
+#   3. Render reads this file and creates the web service.
+#   4. Fill in all env vars marked sync: false in the Render dashboard.
+#   5. Trigger a manual deploy (or push a commit).
+#   6. After the first deploy, copy the assigned *.onrender.com URL and set
+#      AGORA_PUBLIC_BASE_URL to it, then redeploy.
+
+services:
+  - type: web
+    name: resqvoice-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # alembic upgrade head is idempotent — safe to run on every deploy.
+    # $PORT is injected by Render; do NOT hardcode 8000 here.
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    autoDeploy: true   # redeploy on every push to the connected branch
+
+    envVars:
+      # ── Secrets (fill these in the Render dashboard after creation) ──────
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false      # Paste your Supabase connection string here
+      - key: AGORA_APP_ID
+        sync: false
+      - key: AGORA_APP_CERTIFICATE
+        sync: false
+      - key: AGORA_CUSTOMER_ID
+        sync: false
+      - key: AGORA_CUSTOMER_SECRET
+        sync: false
+      - key: AGORA_WEBHOOK_SECRET
+        sync: false      # Any long random string — same value as in local .env
+      - key: AGORA_PUBLIC_BASE_URL
+        sync: false      # Set AFTER first deploy; value: https://resqvoice-api.onrender.com
+
+      # ── Non-secret configuration (set inline) ────────────────────────────
+      - key: GEMINI_EXTRACTION_MODEL
+        value: gemini-3.5-flash-lite
+      - key: GEMINI_INTERVENTION_MODEL
+        value: gemini-3.5-flash-lite
+      - key: INTERVENTION_PERIODIC_SUMMARY_SECONDS
+        value: "300"
+      - key: INTERVENTION_HIGH_PRIORITY_MODE
+        value: interrupt
+      - key: INTERVENTION_HIGH_PRIORITY_TRIGGERS
+        value: CONFLICT_DETECTED,STALE_CRITICAL_CLAIM
+      - key: AGORA_AGENT_PRESET
+        value: minimax_speech_2_6_turbo
+      - key: AGORA_TTS_CONFIG_JSON
+        value: '{"params":{"voice_setting":{"voice_id":"English_captivating_female1","speed":1.0},"audio_setting":{"sample_rate":44100}}}'
+      # Allows localhost:5173 (Vite) and localhost:3000 during local development.
+      # Add your production frontend URL here when you deploy the frontend too.
+      - key: CORS_ALLOW_ORIGINS
+        value: "http://localhost:5173,http://localhost:3000"

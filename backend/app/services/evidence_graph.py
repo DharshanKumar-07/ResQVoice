@@ -21,56 +21,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.models import Claim, Evidence, Hypothesis
-from app.schemas import EvidenceType
-
-
-# ── Public I/O models ─────────────────────────────────────────────────────────
-
-class EvidenceView(BaseModel):
-    """A view of an Evidence record."""
-    id: str
-    type: EvidenceType
-    description: str
-    source: str
-
-
-class ProvenanceTrace(BaseModel):
-    """The provenance of a single Claim or Hypothesis."""
-    id: str
-    entity_type: Literal["claim", "hypothesis"]
-    text: str
-    speaker: str
-    timestamp: Optional[datetime]
-    status: str
-    supporting_evidence: List[EvidenceView]
-    contradicting_evidence: List[EvidenceView]
-
-
-class GraphNode(BaseModel):
-    """A node in the evidence graph."""
-    id: str
-    label: str
-    type: Literal["claim", "hypothesis", "evidence"]
-    status: Optional[str] = None
-    speaker: Optional[str] = None
-    source: Optional[str] = None
-
-
-class GraphEdge(BaseModel):
-    """A directed edge in the evidence graph."""
-    source: str
-    target: str
-    relation: Literal["supports", "contradicts"]
-
-
-class GraphData(BaseModel):
-    """The complete graph structure for frontend visualization."""
-    nodes: List[GraphNode]
-    edges: List[GraphEdge]
+from app.schemas import (
+    EvidenceType,
+    EvidenceView,
+    GraphData,
+    GraphEdge,
+    GraphNode,
+    ProvenanceTrace,
+)
 
 
 # ── Core Service ──────────────────────────────────────────────────────────────
@@ -130,11 +91,7 @@ def get_graph(db: Session, incident_id: Optional[str] = None) -> GraphData:
         ))
 
     # 3. Add Evidence and Edges
-    # In this schema, Evidence records are stored in the Evidence table,
-    # and their IDs are referenced in the supporting/contradicting arrays of Claims/Hypotheses.
-    # Alternatively, the Evidence table has a claim_id foreign key.
-    
-    # We will just iterate over all Evidence records.
+    # Evidence uses the shared polymorphic target_id for both entity types.
     all_evidence = db.query(Evidence).all()
     for e in all_evidence:
         if e.id not in seen_evidence_ids:

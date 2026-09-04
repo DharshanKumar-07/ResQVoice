@@ -9,6 +9,8 @@ __pycache__/
 *$py.class
 venv/
 .env
+backend/.env
+frontend/.env
 
 # MacOS
 .DS_Store
@@ -17,6 +19,7 @@ venv/
 .idea/
 .vscode/
 
-# Build artifacts and temps
+# Build artifacts, temps, and local tunnel logs
 .tmp/
 *.log
+logs/

@@ -38,21 +38,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-
-# ── Alert output model (not persisted; returned for the caller to dispatch) ───
-
-class Alert(BaseModel):
-    """A single alert produced by the silence-signal detector."""
-    id: str
-    alert_type: str                 # EXPLICIT_UNKNOWN | STALE_CRITICAL_CLAIM
-    source_id: str                  # id of the Unknown or Claim row that triggered this
-    description: str                # human-readable summary of the gap
-    suggested_question: str         # concrete clarifying question for the team
-    severity: str = "HIGH"          # default severity for silence-alerts
-    created_at: datetime
+from app.schemas import SilenceAlert as Alert
 
 
 # ── Configuration constants (overridable via constructor / params) ─────────────

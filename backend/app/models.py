@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, Integer, Float, DateTime, Enum, ARRAY, ForeignKey, JSON
-from sqlalchemy.orm import synonym
 from app.database import Base
+from app.schemas import ActionStatus, HypothesisStatus
 import enum
 from datetime import datetime
 
@@ -8,21 +8,6 @@ class FactStatus(str, enum.Enum):
     UNVERIFIED = "UNVERIFIED"
     VERIFIED = "VERIFIED"
     DISPUTED = "DISPUTED"
-
-class HypothesisStatus(str, enum.Enum):
-    UNCONFIRMED = "UNCONFIRMED"
-    CORROBORATED = "CORROBORATED"
-    DISPUTED = "DISPUTED"
-    CONFIRMED = "CONFIRMED"
-    REJECTED = "REJECTED"
-
-class ActionStatus(str, enum.Enum):
-    TODO = "TODO"
-    IN_PROGRESS = "IN_PROGRESS"
-    BLOCKED = "BLOCKED"
-    COMPLETED = "COMPLETED"
-    CANCELLED = "CANCELLED"
-    OVERDUE = "OVERDUE"
 
 class Fact(Base):
     __tablename__ = "facts"
@@ -57,10 +42,10 @@ class Claim(Base):
 class Evidence(Base):
     __tablename__ = "evidence"
     id = Column(String, primary_key=True, index=True)
-    # ``claim_id`` is the legacy physical column name. Evidence may target a
-    # Claim or a Hypothesis, so services use the canonical ``target_id`` name.
-    target_id = Column("claim_id", String, nullable=False)
-    claim_id = synonym("target_id")
+    # Evidence may target either a Claim or Hypothesis. ``target_id`` is the
+    # canonical shared-schema name; legacy API payloads are normalized by Pydantic.
+    target_id = Column(String, nullable=False)
+    target_type = Column(String, nullable=True)
     type = Column(String)
     description = Column(String)
     source = Column(String)
@@ -79,10 +64,7 @@ class Unknown(Base):
     id = Column(String, primary_key=True, index=True)
     description = Column(String)
     status = Column(String)
-    # Preserve the installed column while exposing what it actually represents:
-    # the claim or transcript event responsible for the silence signal.
-    source_id = Column("linked_action_id", String, nullable=True)
-    linked_action_id = synonym("source_id")
+    source_id = Column(String, nullable=True)
 
 class Action(Base):
     __tablename__ = "actions"
@@ -118,3 +100,28 @@ class EventLog(Base):
     event_type = Column(String, index=True)
     payload = Column(JSON)
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+class Participant(Base):
+    __tablename__ = "participants"
+    agora_uid = Column(String, primary_key=True)
+    channel = Column(String, primary_key=True, default="incident-room")
+    user_id = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+    role = Column(String, nullable=False)
+    participant_type = Column(String, nullable=False, default="human")
+
+
+class Intervention(Base):
+    __tablename__ = "interventions"
+    id = Column(String, primary_key=True)
+    trigger_type = Column(String, index=True, nullable=False)
+    severity = Column(String, nullable=False)
+    confidence = Column(Float, nullable=False)
+    message = Column(String, nullable=False)
+    related_claim_ids = Column(ARRAY(String), default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    spoken_at = Column(DateTime, nullable=True)
+    status = Column(String, index=True, nullable=False)
+    agent_id = Column(String, nullable=True)

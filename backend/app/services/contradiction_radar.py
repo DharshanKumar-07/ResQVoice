@@ -22,7 +22,7 @@ The service is split into two layers:
 
 Comparison strategy
 -------------------
-Each candidate pair is sent to gemini-3-flash-preview with structured output:
+Each candidate pair is sent to the configured Gemini extraction model with structured output:
   {
     "contradicts": true | false,
     "topic": "<noun phrase summarising the disputed subject>",
@@ -34,53 +34,23 @@ This avoids maintaining embeddings/vector stores and works with the packages alr
 in requirements.txt. The comparator is dependency-injected, so tests run fully
 offline with a mock.
 
-Do NOT modify extractor.py, event_store.py, claim_lifecycle.py, or main.py.
 """
 from __future__ import annotations
 
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-
-# ── Pydantic models (public I/O) ──────────────────────────────────────────────
-
-class ClaimSnapshot(BaseModel):
-    """Lightweight view of a Claim row, used as input to detect_conflicts."""
-    id: str
-    text: str
-    speaker: str
-    role: str
-    topic_hint: Optional[str] = None   # optional caller-supplied topic tag
-
-
-class ComparisonResult(BaseModel):
-    """Structured output from the pairwise comparator."""
-    contradicts: bool
-    topic: str                          # noun phrase, e.g. "payment service health"
-    reason: str                         # one sentence explaining the contradiction
-    recommended_verification: str       # one actionable verification step
-
-
-class ConflictRecord(BaseModel):
-    """Mirrors the Conflict schema row; returned by detect_conflicts."""
-    id: str
-    topic: str
-    claim_a_id: str
-    claim_b_id: str
-    status: str = "UNRESOLVED"
-    recommended_verification: str
-
-
-class ConflictRecheckResult(BaseModel):
-    """Conflict changes produced by re-checking one claim."""
-    active_conflict_ids: list[str]
-    new_conflict_ids: list[str]
-    resolved_conflict_ids: list[str]
+from app.schemas import (
+    ClaimSnapshot,
+    ComparisonResult,
+    Conflict as ConflictRecord,
+    ConflictRecheckResult,
+)
 
 
 # ── Comparator protocol (dependency-injection boundary) ───────────────────────
@@ -220,7 +190,7 @@ def _make_gemini_comparator() -> ClaimComparator:
         prompt = f"Statement A: {text_a}\n\nStatement B: {text_b}"
 
         response = client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model=os.environ.get("GEMINI_EXTRACTION_MODEL", "gemini-3.5-flash-lite"),
             contents=prompt,
             config={
                 "system_instruction": _COMPARATOR_SYSTEM_PROMPT,

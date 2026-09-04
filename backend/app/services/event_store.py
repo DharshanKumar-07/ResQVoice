@@ -45,14 +45,15 @@ def process_transcript_chunk(db: Session, speaker: str, role: str, text: str, ti
 
 
 def persist_transcript_chunk(
-    db: Session, speaker: str, role: str, text: str, timestamp: str
+    db: Session, speaker: str, role: str, text: str, timestamp: str, **metadata
 ):
     """Persist raw speech immediately so every frontend can display it."""
     return append_event(db, "TRANSCRIPT_CHUNK", {
         "speaker": speaker,
         "role": role,
         "text": text,
-        "timestamp": timestamp
+        "timestamp": timestamp,
+        **metadata,
     })
 
 

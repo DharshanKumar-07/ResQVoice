@@ -334,15 +334,11 @@ class TestDetectConflictsAdapter:
         conflicts_1 = detect_conflicts(new_claim, db, comparator=comparator)
         assert len(conflicts_1) == 1
 
-        # Second call with same inputs — a real re-ingest scenario.
-        # The new claim isn't in the DB yet, so comparator sees only existing_row.
-        # It will produce a second Conflict row with a new UUID.
-        # The important thing: the test verifies the service doesn't error and
-        # returns a consistent structure. Deduplication is a caller responsibility.
+        # Second call with the same inputs reuses the persisted pair.
         conflicts_2 = detect_conflicts(new_claim, db, comparator=comparator)
         assert len(conflicts_2) == 1
-        # Different UUIDs (each call creates a new record)
-        assert conflicts_1[0].id != conflicts_2[0].id
+        assert conflicts_1[0].id == conflicts_2[0].id
+        assert db.query(Conflict).count() == 1
 
     def test_cr13_detect_conflicts_no_existing_claims_returns_empty(self, db):
         """CR-13: With an empty claims table, detect_conflicts returns []."""

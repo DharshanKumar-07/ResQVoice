@@ -18,15 +18,19 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.models import Claim, Evidence, Hypothesis
-from app.schemas import EvidenceTargetType
-from app.services.claim_lifecycle import (
+from app.schemas import (
     ClaimStatusUpdate,
-    EvidenceInput,
+    Evidence as EvidenceInput,
+    EvidenceTargetType,
+    GraphData,
+    ProvenanceTrace,
+)
+from app.services.claim_lifecycle import (
     apply_evidence,
     apply_evidence_to_hypothesis,
 )
 from app.services.contradiction_radar import ClaimSnapshot, recheck_conflicts
-from app.services.evidence_graph import GraphData, ProvenanceTrace, get_graph, get_provenance
+from app.services.evidence_graph import get_graph, get_provenance
 from app.services.silence_signal import reset_silence_signal
 
 
@@ -91,6 +95,7 @@ def ingest_evidence(
         ev_row = Evidence(
             id=evidence.id,
             target_id=evidence.target_id,
+            target_type=target_type.value,
             type=evidence.type.value,
             description=evidence.description,
             source=evidence.source,

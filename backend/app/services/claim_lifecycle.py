@@ -32,9 +32,9 @@ instantiated and tested in complete isolation.
 """
 from __future__ import annotations
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from app.schemas import ClaimStatusUpdate
 from app.schemas import Evidence as EvidenceInput
 from app.schemas import EvidenceType
 
@@ -52,25 +52,6 @@ CLAIM_TERMINAL_STATUSES = {"RESOLVED", "REJECTED"}
 # Statuses that can appear on a Hypothesis row (enum column)
 HYPOTHESIS_INITIAL_STATUSES = {"UNCONFIRMED"}
 HYPOTHESIS_TERMINAL_STATUSES = {"CONFIRMED", "REJECTED"}
-
-
-# ---------------------------------------------------------------------------
-# Public I/O model
-# ---------------------------------------------------------------------------
-
-class ClaimStatusUpdate(BaseModel):
-    """Result returned by apply_evidence / apply_evidence_to_hypothesis."""
-    model_config = ConfigDict(populate_by_name=True)
-
-    target_id: str = Field(validation_alias=AliasChoices("target_id", "claim_id"))
-    previous_status: str
-    new_status: str
-    changed: bool
-    reason: str
-
-    @property
-    def claim_id(self) -> str:
-        return self.target_id
 
 
 # ---------------------------------------------------------------------------

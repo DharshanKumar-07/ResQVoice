@@ -117,3 +117,48 @@ export interface TimelineEvent {
   description: string;
   event_type: string;
 }
+
+export interface Participant {
+  agora_uid: string;
+  user_id: string;
+  display_name: string;
+  role: string;
+  participant_type: 'human' | 'ai_agent' | 'system';
+  channel: string;
+}
+
+export interface Intervention {
+  id: string;
+  trigger_type: string;
+  severity: string;
+  confidence: number;
+  message: string;
+  related_claim_ids: string[];
+  created_at: string;
+  expires_at?: string | null;
+  spoken_at?: string | null;
+  status: 'PENDING' | 'DEFERRED' | 'SPOKEN' | 'DISMISSED' | 'EXPIRED';
+  agent_id?: string | null;
+}
+
+export interface SOPMatch {
+  title: string;
+  reference: string;
+  score: number;
+  required_steps: string[];
+}
+
+export interface PotentialSOPConflict {
+  proposed_action: string;
+  sop_reference: string;
+  missing_steps: string[];
+  out_of_order: boolean;
+  recommended_sequence: string[];
+}
+
+export interface SafetyRecommendation {
+  decision: Decision;
+  sop_match: SOPMatch;
+  confidence: number;
+  conflict?: PotentialSOPConflict;
+}

@@ -1,68 +1,76 @@
 import os
+import asyncio
+import weakref
 from pathlib import Path
 
 from aiolimiter import AsyncLimiter
-from google import genai
-from google.genai import errors
+from groq import AsyncGroq, APIStatusError, RateLimitError
+
+from app.services.provider_metrics import PROVIDER_REQUESTS
 
 
-GEMINI_MODEL = "gemini-3.5-transcribe"
-GEMINI_RATE_LIMITER = AsyncLimiter(max_rate=10, time_period=60)
+DEFAULT_GROQ_MODEL = "whisper-large-v3-turbo"
+
+
+def _groq_rpm_limit() -> int:
+    try:
+        configured = int(os.environ.get("GROQ_REQUESTS_PER_MINUTE", "18"))
+    except ValueError:
+        return 18
+    return max(1, configured)
+
+
+GROQ_RATE_LIMITERS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _groq_rate_limiter() -> AsyncLimiter:
+    loop = asyncio.get_running_loop()
+    limiter = GROQ_RATE_LIMITERS.get(loop)
+    if limiter is None:
+        limiter = AsyncLimiter(max_rate=_groq_rpm_limit(), time_period=60)
+        GROQ_RATE_LIMITERS[loop] = limiter
+    return limiter
 
 
 class TranscriptionQuotaExceeded(Exception):
-    """Gemini rejected a transcription because its request quota was exhausted."""
+    """Groq rejected a transcription because its request quota was exhausted."""
 
 
 class TranscriptionServiceError(Exception):
-    """Gemini could not complete a transcription for a non-quota reason."""
+    """Groq could not complete a transcription for a non-quota reason."""
 
 
 async def transcribe_audio_file(path: Path, mime_type: str) -> str:
-    """Transcribe one audio file while keeping Gemini traffic under 10 RPM."""
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    """Transcribe one browser audio chunk with Groq Whisper."""
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
-        raise TranscriptionServiceError("GEMINI_API_KEY is not configured")
+        raise TranscriptionServiceError("GROQ_API_KEY is not configured")
 
-    client = genai.Client(api_key=api_key)
-    uploaded_file = None
+    model = os.environ.get("GROQ_TRANSCRIPTION_MODEL", DEFAULT_GROQ_MODEL).strip()
+    client = AsyncGroq(api_key=api_key, max_retries=0)
 
     try:
-        async with GEMINI_RATE_LIMITER:
-            uploaded_file = await client.aio.files.upload(
-                file=path,
-                config={"mime_type": mime_type},
+        # Groq accepts WebM/Opus, Ogg, MP4/M4A, MP3, and WAV directly, so the
+        # browser-native chunk can be forwarded without conversion.
+        async with _groq_rate_limiter():
+            PROVIDER_REQUESTS.record("groq")
+            response = await client.audio.transcriptions.create(
+                file=(path.name, path.read_bytes(), mime_type),
+                model=model,
+                response_format="json",
+                temperature=0.0,
             )
-            interaction = await client.aio.interactions.create(
-                model=GEMINI_MODEL,
-                input=[
-                    {
-                        "type": "audio",
-                        "uri": uploaded_file.uri,
-                        "mime_type": uploaded_file.mime_type,
-                    }
-                ],
-                generation_config={
-                    "transcription_config": {
-                        "language_codes": [],
-                        "mode": {"type": "verbatim"},
-                    }
-                },
-            )
-    except errors.ClientError as exc:
-        if exc.code == 429 or exc.status == "RESOURCE_EXHAUSTED":
+    except RateLimitError as exc:
+        raise TranscriptionQuotaExceeded from exc
+    except APIStatusError as exc:
+        if exc.status_code == 429:
             raise TranscriptionQuotaExceeded from exc
         raise TranscriptionServiceError(str(exc)) from exc
     except Exception as exc:
-        # Some Gemini transports expose the HTTP code without using ClientError.
         if getattr(exc, "status_code", None) == 429 or getattr(exc, "code", None) == 429:
             raise TranscriptionQuotaExceeded from exc
         raise TranscriptionServiceError(str(exc)) from exc
     finally:
-        if uploaded_file is not None and uploaded_file.name:
-            try:
-                await client.aio.files.delete(name=uploaded_file.name)
-            except Exception as cleanup_error:
-                print(f"[Audio STT] Temporary Gemini file cleanup failed: {cleanup_error}")
+        await client.close()
 
-    return interaction.output_text.strip() if interaction.output_text else ""
+    return (response.text or "").strip()

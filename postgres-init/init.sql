@@ -35,7 +35,8 @@ CREATE TABLE claims (
 CREATE INDEX ix_claims_id ON claims (id);
 CREATE TABLE evidence (
 	id VARCHAR NOT NULL, 
-	claim_id VARCHAR NOT NULL, 
+	target_id VARCHAR NOT NULL,
+	target_type VARCHAR,
 	type VARCHAR, 
 	description VARCHAR, 
 	source VARCHAR, 
@@ -56,7 +57,7 @@ CREATE TABLE unknowns (
 	id VARCHAR NOT NULL, 
 	description VARCHAR, 
 	status VARCHAR, 
-	linked_action_id VARCHAR, 
+	source_id VARCHAR,
 	PRIMARY KEY (id)
 );
 CREATE INDEX ix_unknowns_id ON unknowns (id);
@@ -91,3 +92,37 @@ CREATE TABLE timeline_events (
 	PRIMARY KEY (id)
 );
 CREATE INDEX ix_timeline_events_id ON timeline_events (id);
+CREATE TABLE event_log (
+	id SERIAL NOT NULL,
+	event_type VARCHAR,
+	payload JSON,
+	timestamp TIMESTAMP WITHOUT TIME ZONE,
+	PRIMARY KEY (id)
+);
+CREATE INDEX ix_event_log_event_type ON event_log (event_type);
+CREATE INDEX ix_event_log_id ON event_log (id);
+CREATE TABLE participants (
+	agora_uid VARCHAR NOT NULL,
+	channel VARCHAR NOT NULL,
+	user_id VARCHAR NOT NULL,
+	display_name VARCHAR NOT NULL,
+	role VARCHAR NOT NULL,
+	participant_type VARCHAR NOT NULL,
+	PRIMARY KEY (agora_uid, channel)
+);
+CREATE TABLE interventions (
+	id VARCHAR NOT NULL,
+	trigger_type VARCHAR NOT NULL,
+	severity VARCHAR NOT NULL,
+	confidence FLOAT NOT NULL,
+	message VARCHAR NOT NULL,
+	related_claim_ids VARCHAR[],
+	created_at TIMESTAMP WITHOUT TIME ZONE,
+	expires_at TIMESTAMP WITHOUT TIME ZONE,
+	spoken_at TIMESTAMP WITHOUT TIME ZONE,
+	status VARCHAR NOT NULL,
+	agent_id VARCHAR,
+	PRIMARY KEY (id)
+);
+CREATE INDEX ix_interventions_trigger_type ON interventions (trigger_type);
+CREATE INDEX ix_interventions_status ON interventions (status);

@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine, event as sa_event
+from sqlalchemy import create_engine, event as sa_event, inspect
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.types import TypeDecorator, Text
 
@@ -47,15 +47,21 @@ sa.ARRAY = lambda item_type, *a, **kw: ArrayAsJSON()  # type: ignore[assignment]
 
 # ── App imports ───────────────────────────────────────────────────────────────
 from app.database import Base
-from app.models import Claim, Hypothesis
-from app.services.claim_lifecycle import EvidenceInput, EvidenceType
-from app.schemas import EvidenceTargetType
+from app import schemas as app_schemas
+from app.models import Claim, Conflict, Evidence, Hypothesis, Unknown
+from app.schemas import Evidence as EvidenceInput
+from app.schemas import EvidenceTargetType, EvidenceType
+from app.services.claim_lifecycle import ClaimStatusUpdate as LifecycleStatusUpdate
 from app.services.contradiction_radar import ComparisonResult
+from app.services.contradiction_radar import ConflictRecheckResult as RadarRecheckResult
 from app.services.event_store import process_transcript_chunk
+from app.services.evidence_graph import GraphData as EvidenceGraphData
 from app.services.evidence_graph import get_graph, get_provenance
 from app.services.extractor import ExtractedData
 from app.services.orchestrator import ingest_evidence
+from app.services.silence_signal import Alert as SilenceAlert
 from app.services.silence_signal import scan_for_unresolved
+from shared.python import schemas as shared_schemas
 
 
 # ── Setup & Fixtures ──────────────────────────────────────────────────────────
@@ -152,6 +158,25 @@ def _mock_comparator(text_a: str, text_b: str) -> ComparisonResult:
 
 @patch("app.services.extractor.extract_claims", side_effect=_mock_extractor)
 def test_end_to_end_orchestration(mock_extract, db):
+    # The backend facade must expose the exact shared classes, not copies.
+    assert app_schemas.Evidence is shared_schemas.Evidence
+    assert app_schemas.Conflict is shared_schemas.Conflict
+    assert app_schemas.Unknown is shared_schemas.Unknown
+    assert app_schemas.GraphData is shared_schemas.GraphData
+    assert LifecycleStatusUpdate is shared_schemas.ClaimStatusUpdate
+    assert RadarRecheckResult is shared_schemas.ConflictRecheckResult
+    assert EvidenceGraphData is shared_schemas.GraphData
+    assert SilenceAlert is shared_schemas.SilenceAlert
+
+    database_columns = {
+        table: {column["name"] for column in inspect(db.bind).get_columns(table)}
+        for table in ("evidence", "unknowns")
+    }
+    assert {"target_id", "target_type"} <= database_columns["evidence"]
+    assert "claim_id" not in database_columns["evidence"]
+    assert "source_id" in database_columns["unknowns"]
+    assert "linked_action_id" not in database_columns["unknowns"]
+
     transcript = load_transcript()
     
     # 1. Replay the transcript through the event store
@@ -188,6 +213,8 @@ def test_end_to_end_orchestration(mock_extract, db):
     stale_alerts = [a for a in alerts if a.alert_type == "STALE_CRITICAL_CLAIM"]
     assert len(stale_alerts) == 1
     assert stale_alerts[0].source_id == "claim-db-cpu"
+    silence_row = db.query(Unknown).filter(Unknown.source_id == "claim-db-cpu").one()
+    assert silence_row.status == "OPEN"
 
     # 3. Orchestrator ingests new evidence
     evidence1 = EvidenceInput(
@@ -203,10 +230,26 @@ def test_end_to_end_orchestration(mock_extract, db):
     # 4. Verify Claim Lifecycle transitioned it
     assert result1.lifecycle_update.previous_status == "UNVERIFIED"
     assert result1.lifecycle_update.new_status == "CORROBORATED"
+    assert result1.silence_reset is True
+    assert result1.provenance.status == "CORROBORATED"
+    assert result1.provenance.supporting_evidence[0].id == evidence1.id
+    assert any(
+        edge.source == evidence1.id
+        and edge.target == "claim-db-cpu"
+        and edge.relation == "supports"
+        for edge in result1.evidence_graph.edges
+    )
     
     c = db.query(Claim).first()
     assert c.status == "CORROBORATED"
     assert len(c.supporting) == 1
+    db.refresh(silence_row)
+    assert silence_row.status == "RESOLVED"
+
+    stored_evidence1 = db.query(Evidence).filter(Evidence.id == evidence1.id).one()
+    assert stored_evidence1.target_id == "claim-db-cpu"
+    assert stored_evidence1.target_type == "claim"
+    assert stored_evidence1.type == "supporting"
     
     # Add a second piece of supporting evidence to confirm it
     evidence2 = EvidenceInput(
@@ -219,6 +262,8 @@ def test_end_to_end_orchestration(mock_extract, db):
     )
     result2 = ingest_evidence(evidence2, db, comparator=_mock_comparator)
     assert result2.lifecycle_update.new_status == "CONFIRMED"
+    assert result2.provenance.status == "CONFIRMED"
+    assert len(result2.provenance.supporting_evidence) == 2
     
     # 5. Silence Signal should be reset (no longer alert)
     # The claim is now CONFIRMED (terminal) AND has evidence.
@@ -263,17 +308,43 @@ def test_end_to_end_orchestration(mock_extract, db):
     
     # The orchestrator should have flagged a conflict between claim-db-fine and claim-db-cpu
     assert len(result3.new_conflicts) == 1
+    conflict = db.query(Conflict).filter(Conflict.id == result3.new_conflicts[0]).one()
+    assert {conflict.claim_a_id, conflict.claim_b_id} == {
+        "claim-db-cpu",
+        "claim-db-fine",
+    }
+    assert conflict.status == "UNRESOLVED"
 
     # 8. Assert Final Incident State matches expected statuses
-    final_claim_cpu = db.query(Claim).filter(Claim.id == "claim-db-cpu").first()
-    assert final_claim_cpu.status == "CONFIRMED"
-
-    final_claim_fine = db.query(Claim).filter(Claim.id == "claim-db-fine").first()
-    assert final_claim_fine.status == "CORROBORATED"
-
-    final_hypo = db.query(Hypothesis).filter(Hypothesis.id == "hypo-pricing").first()
-    # It received no evidence so it should remain UNCONFIRMED.
-    assert final_hypo.status.name == "UNCONFIRMED"
+    final_incident_state = {
+        "claims": {
+            row.id: row.status
+            for row in db.query(Claim).order_by(Claim.id).all()
+        },
+        "hypotheses": {
+            row.id: row.status.value
+            for row in db.query(Hypothesis).order_by(Hypothesis.id).all()
+        },
+        "conflicts": {
+            tuple(sorted((row.claim_a_id, row.claim_b_id))): row.status
+            for row in db.query(Conflict).all()
+        },
+        "silence_signals": {
+            row.source_id: row.status
+            for row in db.query(Unknown).all()
+        },
+    }
+    assert final_incident_state == {
+        "claims": {
+            "claim-db-cpu": "CONFIRMED",
+            "claim-db-fine": "CORROBORATED",
+        },
+        "hypotheses": {"hypo-pricing": "UNCONFIRMED"},
+        "conflicts": {
+            ("claim-db-cpu", "claim-db-fine"): "UNRESOLVED",
+        },
+        "silence_signals": {"claim-db-cpu": "RESOLVED"},
+    }
 
     # Ensure silence signal was removed for the confirmed claim
     final_unknowns = scan_for_unresolved("INC-001", db, now=future_time, staleness_window_sec=600)

@@ -72,8 +72,8 @@ def test_get_provenance_claim(db):
     )
     db.add(claim)
     
-    ev1 = Evidence(id=ev1_id, claim_id=claim_id, type="supporting", description="Support", source="Log")
-    ev2 = Evidence(id=ev2_id, claim_id=claim_id, type="contradicting", description="Contra", source="Log")
+    ev1 = Evidence(id=ev1_id, target_id=claim_id, target_type="claim", type="supporting", description="Support", source="Log")
+    ev2 = Evidence(id=ev2_id, target_id=claim_id, target_type="claim", type="contradicting", description="Contra", source="Log")
     db.add_all([ev1, ev2])
     db.commit()
 
@@ -100,7 +100,7 @@ def test_get_provenance_hypothesis(db):
     )
     db.add(hypo)
 
-    ev1 = Evidence(id=ev1_id, claim_id=hypo_id, type="supporting", description="Support", source="Log")
+    ev1 = Evidence(id=ev1_id, target_id=hypo_id, target_type="hypothesis", type="supporting", description="Support", source="Log")
     db.add(ev1)
     db.commit()
 
@@ -123,8 +123,8 @@ def test_get_graph(db):
 
     db.add(Claim(id=claim_id, text="C1", status="UNVERIFIED"))
     db.add(Hypothesis(id=hypo_id, description="H1", status="UNCONFIRMED"))
-    db.add(Evidence(id=ev1_id, claim_id=claim_id, type="supporting", description="E1"))
-    db.add(Evidence(id=ev2_id, claim_id=hypo_id, type="contradicting", description="E2"))
+    db.add(Evidence(id=ev1_id, target_id=claim_id, target_type="claim", type="supporting", description="E1"))
+    db.add(Evidence(id=ev2_id, target_id=hypo_id, target_type="hypothesis", type="contradicting", description="E2"))
     db.commit()
 
     graph = get_graph(db)

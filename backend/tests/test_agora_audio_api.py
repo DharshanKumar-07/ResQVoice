@@ -69,6 +69,29 @@ def test_agora_token_uses_server_credentials_and_one_hour_expiry(api_client):
     assert before + 3599 <= expires_at <= int(time.time()) + 3600
 
 
+def test_deployment_health_requires_database(api_client):
+    client, _, main = api_client
+    connection = MagicMock()
+    with patch.object(main.engine, "connect") as connect:
+        connect.return_value.__enter__.return_value = connection
+        response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok", "service": "resqvoice-api", "database": "ok",
+    }
+    connection.execute.assert_called_once()
+
+
+def test_deployment_health_fails_when_database_is_unavailable(api_client):
+    client, _, main = api_client
+    with patch.object(main.engine, "connect", side_effect=RuntimeError("offline")):
+        response = client.get("/healthz")
+
+    assert response.status_code == 503
+    assert response.json()["database"] == "unavailable"
+
+
 def test_audio_transcription_forwards_speaker_metadata(api_client):
     client, fake_db, main = api_client
 
@@ -109,7 +132,7 @@ def test_audio_transcription_forwards_speaker_metadata(api_client):
     )
     assert timestamp.endswith("+00:00")
     schedule_extraction.assert_called_once_with(
-        "Rahul", "Backend Engineer", "The database is healthy.", timestamp
+        123, "Rahul", "Backend Engineer", "The database is healthy.", timestamp, 0.0
     )
 
 
@@ -158,14 +181,28 @@ def test_audio_transcription_rejects_unsupported_content_type(api_client):
     assert response.json()["detail"] == "Unsupported audio content type: text/plain"
 
 
-def test_audio_transcription_confirms_false_silence_for_vad_speech(api_client):
+def test_tiny_silent_chunk_never_calls_transcription_provider(api_client):
+    client, _, main = api_client
+    with patch.object(main, "transcribe_audio_file", AsyncMock()) as transcribe:
+        response = client.post(
+            "/api/audio/transcribe",
+            files={"audio": ("chunk.webm", b"silence", "audio/webm")},
+            data={"speaker": "Priya", "role": "Incident Commander", "uid": "7"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "skipped"
+    transcribe.assert_not_awaited()
+
+
+def test_audio_transcription_does_not_duplicate_call_for_silence_result(api_client):
     client, _, main = api_client
 
     with (
         patch.object(
             main,
             "transcribe_audio_file",
-            AsyncMock(side_effect=["SILENCE", "Audible speech recovered."]),
+            AsyncMock(return_value="SILENCE"),
         ) as transcribe,
         patch.object(
             main,
@@ -186,8 +223,8 @@ def test_audio_transcription_confirms_false_silence_for_vad_speech(api_client):
         )
 
     assert response.status_code == 200
-    assert response.json()["transcript"] == "Audible speech recovered."
-    assert transcribe.await_count == 2
+    assert response.json() == {"transcript": "", "status": "silence"}
+    assert transcribe.await_count == 1
 
 
 def test_reset_workspace_clears_every_persisted_model(api_client):
@@ -199,8 +236,8 @@ def test_reset_workspace_clears_every_persisted_model(api_client):
 
     assert response.status_code == 200
     assert response.json()["status"] == "reset"
-    assert fake_db.query.call_count == 10
-    assert fake_query.delete.call_count == 10
+    assert fake_db.query.call_count == 12
+    assert fake_query.delete.call_count == 12
     fake_db.commit.assert_called_once()
 
 
@@ -224,7 +261,7 @@ def test_audio_transcription_returns_429_and_retry_after(api_client):
         "status": "error",
         "code": "QUOTA_EXCEEDED",
         "message": (
-            "Gemini transcription rate limit exceeded (429). "
+            "Groq transcription rate limit exceeded (429). "
             "Please slow down or pause audio."
         ),
     }
@@ -248,5 +285,5 @@ def test_audio_transcription_returns_500_for_service_failure(api_client):
     assert response.json() == {
         "status": "error",
         "code": "TRANSCRIPTION_FAILED",
-        "message": "Gemini audio transcription failed.",
+        "message": "Groq audio transcription failed.",
     }

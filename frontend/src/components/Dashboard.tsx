@@ -16,6 +16,7 @@ import {
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  ShieldAlert,
   TestTube2,
   UserRound,
   XCircle,
@@ -27,6 +28,7 @@ import type {
   Decision,
   Fact,
   Hypothesis,
+  SafetyRecommendation,
   TranscriptEvent,
 } from '../types';
 import { MOCK_PAYMENT_OUTAGE_TRANSCRIPTS } from '../data/mockIncident';
@@ -93,6 +95,18 @@ export default function Dashboard() {
   const [useMockData, setUseMockData] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [proposedAction, setProposedAction] = useState('Rollback the pricing tier deployment');
+  const [actionEvidence, setActionEvidence] = useState('DB CPU is at 100%\nPricing deployment preceded the outage');
+  const [completedSteps, setCompletedSteps] = useState(
+    'Confirm the incident symptoms and identify the affected production service and deployment.\n' +
+    'Capture the current release version, error rate, latency, and customer-impact baseline.\n' +
+    'Identify and validate the last known-good release and confirm rollback compatibility.',
+  );
+  const [approverName, setApproverName] = useState('Incident Commander');
+  const [verificationMetric, setVerificationMetric] = useState('Payment error rate returned to baseline');
+  const [verificationFactId, setVerificationFactId] = useState('');
+  const [safetyResult, setSafetyResult] = useState<SafetyRecommendation | null>(null);
+  const [busyDecisionId, setBusyDecisionId] = useState<string | null>(null);
 
   const fetchState = async () => {
     try {
@@ -102,7 +116,19 @@ export default function Dashboard() {
           params: { limit: 50 },
         }),
       ]);
-      setState({ ...EMPTY_STATE, ...stateResponse.data, transcripts: transcriptResponse.data });
+      setState(previous => {
+        const transcriptsById = new Map(
+          (previous?.transcripts ?? []).map(item => [item.id, item]),
+        );
+        transcriptResponse.data.forEach(item => transcriptsById.set(item.id, item));
+        return {
+          ...EMPTY_STATE,
+          ...stateResponse.data,
+          transcripts: Array.from(transcriptsById.values())
+            .sort((a, b) => a.id - b.id)
+            .slice(-50),
+        };
+      });
       setError(null);
     } catch (fetchError) {
       console.error('Failed to fetch incident state:', fetchError);
@@ -118,6 +144,29 @@ export default function Dashboard() {
     void fetchState();
     const interval = window.setInterval(fetchState, 2_000);
     return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const eventSource = new EventSource('http://localhost:8000/api/transcripts/stream');
+    eventSource.onmessage = event => {
+      try {
+        const transcript = JSON.parse(event.data) as TranscriptEvent;
+        setState(previous => {
+          const current = previous ?? EMPTY_STATE;
+          const transcriptsById = new Map(current.transcripts.map(item => [item.id, item]));
+          transcriptsById.set(transcript.id, transcript);
+          return {
+            ...current,
+            transcripts: Array.from(transcriptsById.values())
+              .sort((a, b) => a.id - b.id)
+              .slice(-50),
+          };
+        });
+      } catch (streamError) {
+        console.warn('Ignoring malformed transcript stream event:', streamError);
+      }
+    };
+    return () => eventSource.close();
   }, []);
 
   const handleResetWorkspace = async () => {
@@ -137,6 +186,58 @@ export default function Dashboard() {
       setError('Workspace reset failed. The backend store may not be empty.');
     } finally {
       setIsResetting(false);
+    }
+  };
+
+  const lines = (value: string) => value
+    .split('\n')
+    .map(item => item.trim())
+    .filter(Boolean);
+
+  const handleRecommend = async () => {
+    setBusyDecisionId('recommend');
+    try {
+      const response = await axios.post<SafetyRecommendation>(
+        'http://localhost:8000/api/safety/recommend',
+        {
+          proposed_action: proposedAction,
+          evidence: lines(actionEvidence),
+          completed_steps: lines(completedSteps),
+        },
+      );
+      setSafetyResult(response.data);
+      await fetchState();
+    } catch (safetyError) {
+      console.error('SOP recommendation failed:', safetyError);
+      setError('The safety recommendation could not be created.');
+    } finally {
+      setBusyDecisionId(null);
+    }
+  };
+
+  const advanceDecision = async (decision: Decision, operation: 'approve' | 'execute' | 'verify') => {
+    setBusyDecisionId(decision.id);
+    try {
+      const base = `http://localhost:8000/api/safety/decisions/${decision.id}`;
+      if (operation === 'approve') {
+        await axios.post(`${base}/approve`, { approved_by: approverName });
+      } else if (operation === 'execute') {
+        await axios.post(`${base}/execute`);
+      } else {
+        await axios.post(`${base}/verify`, {
+          fact_id: verificationFactId || safeState.facts[0]?.id,
+          observed_metric: verificationMetric,
+          source: 'Safety verification UI',
+          verified_by: approverName,
+        });
+      }
+      setSafetyResult(null);
+      await fetchState();
+    } catch (workflowError) {
+      console.error(`Decision ${operation} failed:`, workflowError);
+      setError(`Decision ${operation} failed. Check its approval and verification state.`);
+    } finally {
+      setBusyDecisionId(null);
     }
   };
 
@@ -270,6 +371,89 @@ export default function Dashboard() {
       </section>
 
       <div className="dashboard-grid">
+        <section className="col-span-12 section-panel surface-panel" aria-labelledby="safety-title">
+          <div className="panel-header">
+            <h2 className="panel-title" id="safety-title"><ShieldAlert size={17} aria-hidden="true" />Safety approvals</h2>
+            <span className="panel-count">SOP-gated execution</span>
+          </div>
+          <div className="panel-body safety-workspace">
+            <div className="safety-form">
+              <label className="field-group">
+                <span className="field-label">Proposed action</span>
+                <input className="form-control" value={proposedAction} onChange={event => setProposedAction(event.target.value)} />
+              </label>
+              <label className="field-group">
+                <span className="field-label">Evidence trail (one item per line)</span>
+                <textarea className="form-control" rows={3} value={actionEvidence} onChange={event => setActionEvidence(event.target.value)} />
+              </label>
+              <label className="field-group">
+                <span className="field-label">Completed prerequisite steps (in order)</span>
+                <textarea className="form-control" rows={4} value={completedSteps} onChange={event => setCompletedSteps(event.target.value)} />
+              </label>
+              <button className="btn btn-primary" onClick={() => void handleRecommend()} disabled={busyDecisionId !== null || !proposedAction.trim()}>
+                <ShieldCheck size={14} aria-hidden="true" />
+                {busyDecisionId === 'recommend' ? 'Checking SOP…' : 'Check SOP and recommend'}
+              </button>
+            </div>
+
+            <div className="approval-queue">
+              {safetyResult?.conflict && (
+                <div className="notice-banner notice-warning" role="alert">
+                  <AlertTriangle size={17} aria-hidden="true" />
+                  <div>
+                    <strong>Potential SOP Conflict</strong>
+                    <p>{safetyResult.conflict.missing_steps.length} prerequisite step(s) missing{ safetyResult.conflict.out_of_order ? ' or out of order' : ''}. Approval is blocked.</p>
+                  </div>
+                </div>
+              )}
+              <div className="field-grid safety-controls">
+                <label className="field-group">
+                  <span className="field-label">Human approver</span>
+                  <input className="form-control" value={approverName} onChange={event => setApproverName(event.target.value)} />
+                </label>
+                <label className="field-group">
+                  <span className="field-label">Verification fact / metric</span>
+                  <select className="form-control" value={verificationFactId} onChange={event => setVerificationFactId(event.target.value)}>
+                    <option value="">Select the first available fact</option>
+                    {safeState.facts.map(fact => <option value={fact.id} key={fact.id}>{fact.description}</option>)}
+                  </select>
+                  <input className="form-control" value={verificationMetric} onChange={event => setVerificationMetric(event.target.value)} />
+                </label>
+              </div>
+
+              {safeState.decisions.length === 0 ? (
+                <div className="empty-placeholder">No recommendations are waiting for safety review.</div>
+              ) : safeState.decisions.map(decision => (
+                <article className="item-card safety-decision" key={decision.id}>
+                  <div className="item-top">
+                    <StatusBadge status={decision.execution_status} />
+                    <span className="item-meta mono">{decision.sop_reference || 'No SOP matched'}</span>
+                  </div>
+                  <p className="item-text"><strong>{decision.recommendation}</strong></p>
+                  {decision.evidence.length > 0 && <div className="evidence-note">{decision.evidence.join(' · ')}</div>}
+                  {decision.result?.startsWith('Potential SOP Conflict') && safetyResult?.conflict && (
+                    <ol className="sop-sequence">
+                      {safetyResult.conflict.recommended_sequence.map(step => <li key={step}>{step}</li>)}
+                    </ol>
+                  )}
+                  <div className="decision-controls">
+                    {decision.execution_status === 'PENDING_APPROVAL' && (
+                      <button className="btn btn-primary" disabled={!approverName.trim() || busyDecisionId !== null} onClick={() => void advanceDecision(decision, 'approve')}>Approve explicitly</button>
+                    )}
+                    {decision.execution_status === 'APPROVED' && (
+                      <button className="btn btn-secondary" disabled={busyDecisionId !== null} onClick={() => void advanceDecision(decision, 'execute')}>Execute mocked action</button>
+                    )}
+                    {decision.execution_status === 'AWAITING_VERIFICATION' && (
+                      <button className="btn btn-primary" disabled={safeState.facts.length === 0 || !verificationMetric.trim() || busyDecisionId !== null} onClick={() => void advanceDecision(decision, 'verify')}>Verify metric and complete</button>
+                    )}
+                    {decision.approved_by && <span className="item-meta">Approved by <strong>{decision.approved_by}</strong> at {formatTime(decision.approval_time)}</span>}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
         <section className="col-span-6 section-panel surface-panel" aria-labelledby="known-title">
           <div className="panel-header">
             <h2 className="panel-title" id="known-title"><CheckCircle2 size={17} aria-hidden="true" />What we know</h2>

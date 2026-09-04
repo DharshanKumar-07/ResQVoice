@@ -45,8 +45,9 @@ export interface Claim {
 
 export interface Evidence {
   id: string;
-  claim_id: string;
-  type: string;
+  target_id: string;
+  target_type?: 'claim' | 'hypothesis';
+  type: 'supporting' | 'contradicting';
   description: string;
   source: string;
 }
@@ -64,7 +65,7 @@ export interface Unknown {
   id: string;
   description: string;
   status: string;
-  linked_action_id?: string;
+  source_id?: string;
 }
 
 export interface Action {
@@ -93,6 +94,28 @@ export interface TimelineEvent {
   timestamp: string;
   description: string;
   event_type: string;
+}
+
+export interface SOPMatch {
+  title: string;
+  reference: string;
+  score: number;
+  required_steps: string[];
+}
+
+export interface PotentialSOPConflict {
+  proposed_action: string;
+  sop_reference: string;
+  missing_steps: string[];
+  out_of_order: boolean;
+  recommended_sequence: string[];
+}
+
+export interface SafetyRecommendation {
+  decision: Decision;
+  sop_match: SOPMatch;
+  confidence: number;
+  conflict?: PotentialSOPConflict;
 }
 
 export interface TranscriptEvent {
