@@ -180,6 +180,8 @@ def test_summary_intent_accepts_natural_qualifiers():
 
     assert is_summary_request("Give me a concise live pipeline verification summary.")
     assert is_summary_request("Please give us a quick status summary")
+    assert is_summary_request("Summary.")
+    assert is_summary_request("Could you give me a summary?")
     assert not is_summary_request("We attached a summary to the ticket.")
 
 

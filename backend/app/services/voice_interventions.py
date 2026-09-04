@@ -45,6 +45,9 @@ SUMMARY_PATTERNS = (
     re.compile(r"\bgive (?:me|us) (?:a )?(?:[\w-]+\s+){0,5}summary\b", re.I),
     re.compile(r"\bsummar(?:y|ize|ise) (?:the )?(?:incident|status|situation)\b", re.I),
     re.compile(r"\bwhat(?:'s| is) (?:the )?current status\b", re.I),
+    re.compile(r"^\s*(?:please\s+)?(?:a\s+)?(?:brief|quick|current)?\s*summary\s*[.!?]*\s*$", re.I),
+    re.compile(r"\b(?:can|could) you (?:give|provide|share) (?:me|us) (?:a )?(?:[\w-]+\s+){0,5}summary\b", re.I),
+    re.compile(r"\b(?:tell|update) me (?:on )?(?:the )?(?:incident|status|situation)\b", re.I),
 )
 
 
@@ -113,6 +116,44 @@ def _limit_tts_bytes(text: str, limit: int = 500) -> str:
     return encoded[:limit].decode("utf-8", errors="ignore").rsplit(" ", 1)[0].rstrip(".,;:") + "."
 
 
+def _is_transient_gemini_error(exc: Exception) -> bool:
+    """Retry provider saturation/rate-limit failures, but never credentials errors."""
+    code = getattr(exc, "code", None)
+    if code in {429, 500, 502, 503, 504}:
+        return True
+    message = str(exc).upper()
+    return any(marker in message for marker in (
+        "429", "500", "502", "503", "504", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
+        "HIGH DEMAND", "RATE LIMIT", "TIMEOUT",
+    ))
+
+
+def _fallback_intervention_text(trigger_type: str, db: Session) -> str:
+    """A state-derived, spoken-safe response when Gemini is temporarily unavailable."""
+    conflicts = (
+        db.query(Conflict).filter(Conflict.status == "UNRESOLVED").limit(1).all()
+    )
+    if trigger_type == "SUMMARY_REQUEST":
+        if conflicts:
+            conflict = conflicts[0]
+            return _limit_tts_bytes(
+                f"Current incident status: {conflict.topic} is unresolved. "
+                f"Next, {conflict.recommended_verification}"
+            )
+        claims = db.query(Claim).order_by(Claim.timestamp.desc()).limit(1).all()
+        if claims:
+            return _limit_tts_bytes(
+                f"Current incident status: the latest reported claim is: {claims[0].text}"
+            )
+        return "I do not have incident claims to summarize yet."
+    if conflicts:
+        return _limit_tts_bytes(
+            f"Attention: {conflicts[0].topic} remains unresolved. "
+            f"{conflicts[0].recommended_verification}"
+        )
+    return "I could not generate the requested intervention right now. Please try again shortly."
+
+
 async def generate_intervention_text(
     trigger_type: str,
     db: Session,
@@ -129,28 +170,47 @@ async def generate_intervention_text(
         "trigger_context": trigger_context or {},
         "incident_state": _state_payload(db),
     }
-    PROVIDER_REQUESTS.record("gemini")
-    response = await client.aio.models.generate_content(
-        model=os.getenv(
-            "GEMINI_INTERVENTION_MODEL",
-            os.getenv("GEMINI_EXTRACTION_MODEL", "gemini-3.5-flash-lite"),
-        ),
-        contents=json.dumps(prompt, default=str),
-        config={
-            "system_instruction": (
-                "You are the ResQVoice Incident Co-pilot speaking in a live incident room. "
-                "Using only the supplied Incident State and trigger context, write one concise, "
-                "actionable spoken intervention. Do not use markdown, labels, or preamble. "
-                "Do not invent facts. Keep it under 70 words."
-            ),
-            "temperature": 0.2,
-        },
+    model = os.getenv(
+        "GEMINI_INTERVENTION_MODEL",
+        os.getenv("GEMINI_EXTRACTION_MODEL", "gemini-3.5-flash-lite"),
     )
-    text = _limit_tts_bytes((response.text or "").strip())
-    if not text:
-        raise RuntimeError("Gemini returned an empty voice intervention")
-    log_event("INTERVENTION_TEXT_GENERATED", trigger=trigger_type, text=text)
-    return text
+    for attempt in range(3):
+        try:
+            PROVIDER_REQUESTS.record("gemini")
+            response = await client.aio.models.generate_content(
+                model=model,
+                contents=json.dumps(prompt, default=str),
+                config={
+                    "system_instruction": (
+                        "You are the ResQVoice Incident Co-pilot speaking in a live incident room. "
+                        "Using only the supplied Incident State and trigger context, write one concise, "
+                        "actionable spoken intervention. Do not use markdown, labels, or preamble. "
+                        "Do not invent facts. Keep it under 70 words."
+                    ),
+                    "temperature": 0.2,
+                },
+            )
+            text = _limit_tts_bytes((response.text or "").strip())
+            if not text:
+                raise RuntimeError("Gemini returned an empty voice intervention")
+            log_event("INTERVENTION_TEXT_GENERATED", trigger=trigger_type, text=text)
+            return text
+        except Exception as exc:
+            if not _is_transient_gemini_error(exc) or attempt == 2:
+                if _is_transient_gemini_error(exc):
+                    fallback = _fallback_intervention_text(trigger_type, db)
+                    log_event(
+                        "INTERVENTION_TEXT_FALLBACK", trigger=trigger_type,
+                        error_type=type(exc).__name__, message=str(exc)[:300], text=fallback,
+                    )
+                    return fallback
+                raise
+            delay_seconds = 1.0 * (2 ** attempt)
+            log_event(
+                "INTERVENTION_TEXT_RETRY", trigger=trigger_type, attempt=attempt + 1,
+                delay_seconds=delay_seconds, error_type=type(exc).__name__,
+            )
+            await asyncio.sleep(delay_seconds)
 
 
 def _recent_trigger_exists(
