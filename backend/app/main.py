@@ -132,6 +132,19 @@ _cors_origins: list[str] = (
     if _cors_raw != "*"
     else ["*"]
 )
+# Render may retain an older `CORS_ALLOW_ORIGINS` value after a Blueprint
+# update. Always admit the two loopback spellings used by the local Vite dev
+# server, so a developer can connect to the deployed API without needing a
+# dashboard-only environment-variable edit. Hosted frontend origins must still
+# be explicitly configured through `CORS_ALLOW_ORIGINS`.
+if _cors_origins != ["*"]:
+    for _local_vite_origin in (
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+    ):
+        if _local_vite_origin not in _cors_origins:
+            _cors_origins.append(_local_vite_origin)
 
 app.add_middleware(
     CORSMiddleware,
