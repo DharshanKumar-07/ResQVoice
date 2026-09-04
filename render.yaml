@@ -14,6 +14,7 @@ services:
   - type: web
     name: resqvoice-api
     runtime: python
+    plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     # alembic upgrade head is idempotent — safe to run on every deploy.
