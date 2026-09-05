@@ -5,6 +5,7 @@ import type { IAgoraRTCClient, IMicrophoneAudioTrack, IRemoteAudioTrack } from '
 import { BACKEND_URL } from '../lib/backend';
 
 const AGORA_JOIN_TIMEOUT_MS = 20_000;
+const AGORA_GATEWAY_JOIN_ATTEMPTS = 3;
 const AGENT_UID = Number(import.meta.env.VITE_AGORA_AGENT_UID ?? 1000);
 const RTC_UID_STORAGE_KEY = 'resqvoice-rtc-uid';
 
@@ -54,7 +55,11 @@ function stateWebSocketUrl(): string {
 }
 
 function readableError(value: unknown): string {
-  if (typeof value === 'string' && value.trim()) return value;
+  const message = typeof value === 'string' ? value : '';
+  if (message.includes('CAN_NOT_GET_GATEWAY_SERVER')) {
+    return 'Agora RTC could not reach an active gateway. Retry once; if it persists, confirm the Agora project is Active in the Agora Console and try an unrestricted network (disable VPN/firewall).';
+  }
+  if (message.trim()) return message;
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>;
     for (const key of ['detail', 'message', 'reason', 'error']) {
@@ -64,6 +69,31 @@ function readableError(value: unknown): string {
     try { return JSON.stringify(value); } catch { /* fall through */ }
   }
   return 'The voice agent could not start. Check the backend log for details.';
+}
+
+async function joinWithGatewayRetry(
+  client: IAgoraRTCClient,
+  appId: string,
+  channelName: string,
+  token: string,
+  uid: number,
+): Promise<number | string> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < AGORA_GATEWAY_JOIN_ATTEMPTS; attempt += 1) {
+    try {
+      return await withTimeout(
+        client.join(appId, channelName, token, uid),
+        AGORA_JOIN_TIMEOUT_MS,
+        'Agora join timed out. Check RTC credentials and browser WebRTC access.',
+      );
+    } catch (error) {
+      lastError = error;
+      const isGatewayLookupFailure = String(error).includes('CAN_NOT_GET_GATEWAY_SERVER');
+      if (!isGatewayLookupFailure || attempt === AGORA_GATEWAY_JOIN_ATTEMPTS - 1) break;
+      await new Promise<void>(resolve => window.setTimeout(resolve, 750 * (attempt + 1)));
+    }
+  }
+  throw lastError;
 }
 
 export function useAgoraIncidentRoom() {
@@ -239,10 +269,7 @@ export function useAgoraIncidentRoom() {
       });
       client.on('user-left', user => removeRemote(String(user.uid)));
 
-      const resolvedUid = await withTimeout(
-        client.join(appId, channelName, token, uid), AGORA_JOIN_TIMEOUT_MS,
-        'Agora join timed out. Check RTC credentials and browser WebRTC access.',
-      );
+      const resolvedUid = await joinWithGatewayRetry(client, appId, channelName, token, uid);
       const microphone = await AgoraRTC.createMicrophoneAudioTrack();
       localAudioTrackRef.current = microphone;
       await client.publish(microphone);
