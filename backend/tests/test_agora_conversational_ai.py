@@ -175,6 +175,34 @@ def test_agent_join_replaces_task_conflict_bound_to_stale_speaker_uid():
     assert calls[2][1].endswith("/app-id/join")
 
 
+def test_wildcard_agent_is_adopted_for_another_participant_without_replacement():
+    calls = []
+
+    async def sender(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return httpx.Response(
+            409,
+            json={"agent_id": "shared-agent", "reason": "TaskConflict"},
+            request=httpx.Request(method, url),
+        )
+
+    service = AgoraConversationalAI(AgoraAgentSettings(
+        app_id="app-id", customer_id="customer", customer_secret="secret",
+        public_base_url="https://resqvoice.example.test", webhook_secret="token",
+    ), sender=sender)
+    result = asyncio.run(service.start(StartAgentRequest(
+        channel_name="incident-room", agent_uid=1000, token="rtc-token",
+        remote_rtc_uids=["*"], speaker_uid=None,
+    )))
+
+    try:
+        assert result.agent_id == "shared-agent"
+        assert len(calls) == 1
+        assert ACTIVE_AGENT_SESSIONS["shared-agent"]["channel"] == "incident-room"
+    finally:
+        ACTIVE_AGENT_SESSIONS.pop("shared-agent", None)
+
+
 def test_summary_intent_accepts_natural_qualifiers():
     from app.services.voice_interventions import is_summary_request
 

@@ -34,6 +34,7 @@ from app.services.intervention_policy import InterventionCandidate, Intervention
 from app.services.participant_registry import register_agent, register_participant, resolve_participant
 from app.services.transcript_ingestion import TranscriptIngestionGuard, TranscriptInput
 from app.integrations.agora_conversational_ai import ACTIVE_AGENT_SESSIONS
+from app.services.speaker_activity import clear_speaker_activity, note_speaker_activity
 
 
 @pytest.fixture()
@@ -167,6 +168,28 @@ def test_callback_without_uid_uses_agent_session_speaker_identity(db):
         ACTIVE_AGENT_SESSIONS.pop("agent-identity", None)
 
     assert (identity.display_name, identity.role) == ("Priya", "Incident Commander")
+
+
+def test_wildcard_callback_uses_recent_browser_speaker_activity(db):
+    register_participant(Participant(
+        agora_uid="84", user_id="user-84", display_name="Rahul",
+        role="Backend Engineer", participant_type="human",
+    ), db)
+    ACTIVE_AGENT_SESSIONS["shared-agent"] = {
+        "channel": "incident-room", "agent_uid": "1000", "speaker_uid": "",
+    }
+    clear_speaker_activity()
+    note_speaker_activity("incident-room", "84")
+    try:
+        from app.api.agora_agent_webhook import AgoraEvent, _identity_for
+        identity = _identity_for(AgoraEvent(
+            event_type="utterance", channel="incident-room", text="API is degraded",
+        ), db)
+    finally:
+        ACTIVE_AGENT_SESSIONS.pop("shared-agent", None)
+        clear_speaker_activity()
+
+    assert (identity.display_name, identity.role) == ("Rahul", "Backend Engineer")
 
 
 def test_high_priority_uses_native_interrupt_and_low_priority_appends():

@@ -120,6 +120,7 @@ export function useAgoraIncidentRoom() {
   const agentVolumeTimerRef = useRef<number | null>(null);
   const transcribingTimeoutRef = useRef<number | null>(null);
   const agentAudioTrackRef = useRef<IRemoteAudioTrack | null>(null);
+  const lastActivityReportRef = useRef(0);
 
   const stopActivityMonitoring = useCallback(() => {
     if (localVolumeTimerRef.current !== null) window.clearInterval(localVolumeTimerRef.current);
@@ -146,12 +147,10 @@ export function useAgoraIncidentRoom() {
   }, []);
 
   const leaveRoom = useCallback(async () => {
-    const agentId = agentSessionIdRef.current;
     agentSessionIdRef.current = null;
-    if (agentId) {
-      try { await axios.post(`${BACKEND_URL}/api/agora/agent/stop/${encodeURIComponent(agentId)}`); }
-      catch (stopError) { console.warn('[Agora Agent] Stop failed:', stopError); }
-    }
+    // This agent is shared by everybody in the incident channel. Agora's idle
+    // timeout retires it after the room goes quiet; one browser leaving must
+    // never stop it for the remaining participants.
     closeStateSocket();
     stopActivityMonitoring();
     localAudioTrackRef.current?.close();
@@ -282,6 +281,15 @@ export function useAgoraIncidentRoom() {
         if (level >= speechThreshold) {
           localSpeechActive = true;
           lastSpeechAt = Date.now();
+          if (Date.now() - lastActivityReportRef.current >= 750) {
+            lastActivityReportRef.current = Date.now();
+            void axios.post(`${BACKEND_URL}/api/agora-agent/speaker-activity`, {
+              channel: channelName,
+              speaker_uid: String(resolvedUid),
+            }).catch(activityError => {
+              console.warn('[Speaker Activity] Could not report microphone activity:', activityError);
+            });
+          }
           setSpeechPhase('speech_detected');
           if (transcribingTimeoutRef.current !== null) {
             window.clearTimeout(transcribingTimeoutRef.current);
@@ -315,11 +323,9 @@ export function useAgoraIncidentRoom() {
         channel_name: channelName,
         agent_uid: AGENT_UID,
         token: agentTokenResponse.data.token,
-        // Agora currently supports one subscribed remote RTC UID per agent.
-        // Use the concrete browser UID so the agent receives this speaker's
-        // audio and the callback always has deterministic attribution.
-        remote_rtc_uids: [String(resolvedUid)],
-        speaker_uid: String(resolvedUid),
+        // One shared agent listens to every human in this incident channel.
+        // Agora UID metadata is preferred; browser activity is the fallback.
+        remote_rtc_uids: ['*'],
         speaker_name: speakerName,
         speaker_role: role,
       });

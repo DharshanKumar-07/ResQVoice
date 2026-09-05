@@ -26,6 +26,7 @@ from app.services.observability import log_event
 from app.services.participant_registry import register_participant, resolve_participant
 from app.services.safety_layer import recommend_action
 from app.services.silence_signal import scan_for_unresolved
+from app.services.speaker_activity import note_speaker_activity, recent_speaker_uid
 from app.services.transcript_stream import TRANSCRIPT_BROADCASTER
 from app.services.transcript_ingestion import TRANSCRIPT_GUARD, TranscriptInput
 from app.services.voice_interventions import (
@@ -87,6 +88,11 @@ class ChatCompletionRequest(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
 
 
+class SpeakerActivity(BaseModel):
+    channel: str = Field(default="incident-room", min_length=1, max_length=64)
+    speaker_uid: str = Field(min_length=1, max_length=64)
+
+
 def _authorize(authorization: str | None) -> None:
     expected = os.getenv("AGORA_WEBHOOK_SECRET", "").strip()
     if not expected:  # local/mock development
@@ -125,6 +131,8 @@ def _identity_for(event: AgoraEvent, db: Session) -> Participant:
         )
         if session:
             speaker_uid = session.get("speaker_uid") or None
+        if speaker_uid is None:
+            speaker_uid = recent_speaker_uid(event.channel)
     identity = resolve_participant(event.channel, speaker_uid, db)
     # Explicit event identity is accepted only for direct normalized event calls;
     # the OpenAI endpoint resolves identity from the registered UID.
@@ -292,7 +300,13 @@ async def chat_completions(
         raise HTTPException(status_code=422, detail="A user message is required")
     context = {**request.context, **request.metadata}
     resolved_channel = str(context.get("channel") or channel)
-    resolved_uid = context.get("speaker_uid") or context.get("user_id") or speaker_uid or request.user
+    resolved_uid = (
+        context.get("speaker_uid")
+        or context.get("user_id")
+        or speaker_uid
+        or request.user
+        or recent_speaker_uid(resolved_channel)
+    )
     intervention = await process_utterance(AgoraEvent(
         event_type="utterance", text=_content_text(user_message.content),
         speaker="Agora participant", role="Incident responder",
@@ -329,6 +343,12 @@ async def chat_completions(
 @router.post("/participants", response_model=Participant)
 def register_participant_endpoint(participant: Participant, db: Session = Depends(get_db)):
     return register_participant(participant, db)
+
+
+@router.post("/speaker-activity", status_code=204)
+def speaker_activity_endpoint(activity: SpeakerActivity) -> None:
+    """Record a browser microphone hint for wildcard-agent attribution."""
+    note_speaker_activity(activity.channel, activity.speaker_uid)
 
 
 def _state_snapshot(db: Session) -> dict[str, Any]:

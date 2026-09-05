@@ -266,7 +266,15 @@ class AgoraConversationalAI:
             existing_id = str(conflict.get("agent_id") or conflict.get("agentId") or "")
             if existing_id and conflict.get("reason") == "TaskConflict":
                 previous = ACTIVE_AGENT_SESSIONS.get(existing_id)
-                if previous and previous.get("speaker_uid") == session_metadata["speaker_uid"]:
+                shared_listener = "*" in request.remote_rtc_uids
+                if shared_listener or (
+                    previous
+                    and previous.get("speaker_uid") == session_metadata["speaker_uid"]
+                ):
+                    # A wildcard listener is the room singleton. Adopt it from
+                    # any browser (and after backend restarts) instead of
+                    # replacing an agent that is serving other users.
+                    ACTIVE_AGENT_SESSIONS[existing_id] = session_metadata
                     return StartAgentResponse(
                         agent_id=existing_id,
                         session_id=existing_id,
