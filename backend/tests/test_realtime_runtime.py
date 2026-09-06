@@ -28,8 +28,9 @@ class ArrayAsJSON(TypeDecorator):
 sa.ARRAY = lambda item_type, *args, **kwargs: ArrayAsJSON()  # type: ignore[assignment]
 
 from app.database import Base
-from app.models import Intervention as InterventionRow
-from app.schemas import Participant
+from app.models import Action, EventLog, Fact, Intervention as InterventionRow, Unknown
+from app.schemas import ActionStatus, Participant
+from app.services.incident_report import build_incident_report
 from app.services.intervention_policy import InterventionCandidate, InterventionPolicy
 from app.services.participant_registry import register_agent, register_participant, resolve_participant
 from app.services.transcript_ingestion import TranscriptIngestionGuard, TranscriptInput
@@ -134,6 +135,26 @@ def test_participant_uid_maps_name_role_and_unknown_fallback(db):
     assert (unknown.display_name, unknown.role) == (
         "Participant 99", "Unspecified role",
     )
+
+
+def test_incident_report_is_evidence_bound_and_includes_open_work(db):
+    db.add(Fact(id="fact-1", description="Payment errors are elevated", source="monitoring", speaker="System", status="VERIFIED"))
+    db.add(Unknown(id="unknown-1", description="Failover health is unknown", status="OPEN", source_id="claim-1"))
+    db.add(Action(id="action-1", task="Check failover", owner="", status=ActionStatus.TODO, priority="P1"))
+    db.add(EventLog(event_type="TRANSCRIPT_CHUNK", payload={
+        "timestamp": "2026-09-06T10:00:00Z", "speaker": "Priya",
+        "text": "Payment errors are elevated.",
+    }))
+    db.commit()
+
+    report = build_incident_report(db)
+
+    assert report["status"] == "ATTENTION_REQUIRED"
+    assert report["counts"]["open_questions"] == 1
+    assert report["counts"]["open_actions"] == 1
+    assert "Failover health is unknown" in report["markdown"]
+    assert "owner: UNASSIGNED" in report["markdown"]
+    assert "Priya: Payment errors are elevated." in report["markdown"]
 
 
 def test_ai_agent_has_separate_identity_and_is_rejected_by_human_pipeline(db):

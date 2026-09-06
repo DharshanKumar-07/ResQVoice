@@ -54,6 +54,12 @@
 .btn-danger:hover:not(:disabled) { background: var(--status-disputed-bg); }
 .mock-toggle-active { color: var(--mock-fg); background: var(--mock-bg); border-color: var(--mock-border); }
 
+.agent-operation-body { padding: 14px 16px 16px; }
+.agent-operation-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.agent-operation-note { margin-top: 10px; color: var(--text-secondary); font-size: 12px; line-height: 18px; }
+.report-preview { margin-top: 14px; padding: 13px; background: var(--bg-card-inner); border: 1px solid var(--border-subtle); border-radius: 7px; }
+.report-preview pre { max-height: 360px; margin-top: 10px; padding: 12px; overflow: auto; color: var(--text-secondary); background: #fff; border: 1px solid var(--border-subtle); border-radius: 6px; font-family: var(--font-mono); font-size: 11px; line-height: 17px; white-space: pre-wrap; }
+
 .surface-panel, .glass-panel { background: var(--bg-panel); border: 1px solid var(--border-subtle); border-radius: 9px; box-shadow: var(--shadow-sm); }
 .mock-banner, .notice-banner { min-height: 42px; gap: 10px; padding: 9px 12px; border: 1px solid; border-radius: 7px; font-size: 13px; }
 .mock-banner { color: var(--mock-fg); background: var(--mock-bg); border-color: var(--mock-border); }

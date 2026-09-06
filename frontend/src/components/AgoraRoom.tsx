@@ -104,6 +104,8 @@ export default function AgoraRoom() {
     DECISION_APPROVED: 'Confirming an approved decision',
     SUMMARY_REQUEST: 'Providing a requested summary',
     PERIODIC_SUMMARY: 'Providing a status summary',
+    UNRESOLVED_REVIEW: 'Reviewing evidence gaps',
+    ACTION_OWNERSHIP_REVIEW: 'Reviewing action ownership',
   };
 
   return (

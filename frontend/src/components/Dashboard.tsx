@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   CircleHelp,
   Clock3,
+  FileText,
   History,
   Link2,
   ListTodo,
@@ -16,6 +17,7 @@ import {
   Radio,
   RefreshCw,
   RotateCcw,
+  SearchCheck,
   ShieldCheck,
   ShieldAlert,
   TestTube2,
@@ -31,6 +33,7 @@ import type {
   Hypothesis,
   SafetyRecommendation,
   TranscriptEvent,
+  Unknown,
 } from '../types';
 import { MOCK_PAYMENT_OUTAGE_TRANSCRIPTS } from '../data/mockIncident';
 
@@ -41,7 +44,14 @@ interface State {
   decisions: Decision[];
   claims: Claim[];
   conflicts: Conflict[];
+  unknowns: Unknown[];
   transcripts: TranscriptEvent[];
+}
+
+interface IncidentReport {
+  status: string;
+  summary: string;
+  markdown: string;
 }
 
 const EMPTY_STATE: State = {
@@ -51,6 +61,7 @@ const EMPTY_STATE: State = {
   decisions: [],
   claims: [],
   conflicts: [],
+  unknowns: [],
   transcripts: [],
 };
 
@@ -108,6 +119,8 @@ export default function Dashboard() {
   const [verificationFactId, setVerificationFactId] = useState('');
   const [safetyResult, setSafetyResult] = useState<SafetyRecommendation | null>(null);
   const [busyDecisionId, setBusyDecisionId] = useState<string | null>(null);
+  const [agentCommand, setAgentCommand] = useState<string | null>(null);
+  const [incidentReport, setIncidentReport] = useState<IncidentReport | null>(null);
 
   const fetchState = async () => {
     try {
@@ -216,6 +229,35 @@ export default function Dashboard() {
     }
   };
 
+  const runAgentCommand = async (command: 'summary' | 'review_gaps' | 'review_actions') => {
+    setAgentCommand(command);
+    try {
+      await axios.post(`${BACKEND_URL}/api/agent/command`, { command });
+      setError(null);
+      await fetchState();
+    } catch (commandError) {
+      console.error('Agent command failed:', commandError);
+      setError('Join the Voice Room first, or wait for the previous agent message cooldown to finish.');
+    } finally {
+      setAgentCommand(null);
+    }
+  };
+
+  const generateIncidentReport = async () => {
+    setAgentCommand('report');
+    try {
+      const response = await axios.get<IncidentReport>(`${BACKEND_URL}/api/agent/report`);
+      setIncidentReport(response.data);
+      setError(null);
+      await fetchState();
+    } catch (reportError) {
+      console.error('Incident report generation failed:', reportError);
+      setError('The incident handoff report could not be generated.');
+    } finally {
+      setAgentCommand(null);
+    }
+  };
+
   const advanceDecision = async (decision: Decision, operation: 'approve' | 'execute' | 'verify') => {
     setBusyDecisionId(decision.id);
     try {
@@ -265,7 +307,7 @@ export default function Dashboard() {
   ).length;
   const unresolvedSignals = safeState.hypotheses.filter(hypothesis =>
     hypothesis.status === 'UNCONFIRMED' || hypothesis.status === 'DISPUTED',
-  ).length + safeState.conflicts.length;
+  ).length + safeState.conflicts.length + safeState.unknowns.filter(item => item.status === 'OPEN').length;
 
   if (loading && !state) {
     return (
@@ -368,6 +410,42 @@ export default function Dashboard() {
             <div className="metric-value">{unresolvedSignals}</div>
             <div className="metric-detail">Disputes and active conflicts</div>
           </div>
+        </div>
+      </section>
+
+      <section className="surface-panel agent-operations" aria-labelledby="agent-operations-title">
+        <div className="panel-header">
+          <h2 className="panel-title" id="agent-operations-title"><Radio size={17} aria-hidden="true" />Agent operations</h2>
+          <span className="panel-count">Automatic summary every 5 minutes</span>
+        </div>
+        <div className="agent-operation-body">
+          <div className="agent-operation-actions">
+            <button className="btn btn-primary" disabled={agentCommand !== null} onClick={() => void runAgentCommand('summary')}>
+              <Radio size={14} aria-hidden="true" />Speak status summary
+            </button>
+            <button className="btn btn-secondary" disabled={agentCommand !== null} onClick={() => void runAgentCommand('review_gaps')}>
+              <SearchCheck size={14} aria-hidden="true" />Review evidence gaps
+            </button>
+            <button className="btn btn-secondary" disabled={agentCommand !== null} onClick={() => void runAgentCommand('review_actions')}>
+              <ListTodo size={14} aria-hidden="true" />Review action owners
+            </button>
+            <button className="btn btn-secondary" disabled={agentCommand !== null} onClick={() => void generateIncidentReport()}>
+              <FileText size={14} aria-hidden="true" />Generate handoff report
+            </button>
+          </div>
+          <p className="agent-operation-note">
+            The agent automatically flags contradictions, explicit unknowns, stale critical claims, and unowned P1 actions. Spoken commands require an active Voice Room session.
+          </p>
+          {incidentReport && (
+            <div className="report-preview">
+              <div className="item-top">
+                <strong>Incident handoff / postmortem draft</strong>
+                <StatusBadge status={incidentReport.status} />
+              </div>
+              <p className="item-meta">{incidentReport.summary}</p>
+              <pre>{incidentReport.markdown}</pre>
+            </div>
+          )}
         </div>
       </section>
 
@@ -481,7 +559,7 @@ export default function Dashboard() {
         <section className="col-span-6 section-panel surface-panel" aria-labelledby="unknown-title">
           <div className="panel-header">
             <h2 className="panel-title" id="unknown-title"><CircleHelp size={17} aria-hidden="true" />What we don’t know</h2>
-            <span className="panel-count">{safeState.hypotheses.length} hypotheses</span>
+            <span className="panel-count">{safeState.hypotheses.length} hypotheses · {safeState.unknowns.filter(item => item.status === 'OPEN').length} questions</span>
           </div>
           <div className="panel-body panel-body-scroll item-list">
             {safeState.hypotheses.length === 0 ? (
@@ -497,6 +575,13 @@ export default function Dashboard() {
                 {hypothesis.supporting_evidence?.length > 0 && (
                   <div className="evidence-note"><strong>Supporting evidence:</strong> {hypothesis.supporting_evidence.join(', ')}</div>
                 )}
+              </article>
+            ))}
+            {safeState.unknowns.filter(item => item.status === 'OPEN').map(item => (
+              <article key={item.id} className="item-card">
+                <div className="item-top"><StatusBadge status="UNRESOLVED" label="Open question" /></div>
+                <p className="item-text">{item.description}</p>
+                <div className="item-meta">The agent will request clarification or evidence.</div>
               </article>
             ))}
           </div>

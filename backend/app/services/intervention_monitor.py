@@ -112,12 +112,11 @@ class InterventionMonitor:
                     related_claim_ids=[alert.source_id] if alert.source_id else [],
                 )
 
-            critical_actions = (
-                db.query(Action)
-                .filter(Action.owner.in_([None, ""]))
-                .filter(Action.priority.ilike("critical"))
-                .all()
-            )
+            critical_actions = [
+                action for action in db.query(Action).all()
+                if not (action.owner or "").strip()
+                and (action.priority or "").strip().upper() in {"P1", "CRITICAL", "HIGH"}
+            ]
             for action in critical_actions:
                 await enqueue_generated_intervention(
                     "UNASSIGNED_CRITICAL_ACTION", "HIGH", db,

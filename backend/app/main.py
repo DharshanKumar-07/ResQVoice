@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Literal, Optional
 
 from agora_token_builder import RtcTokenBuilder
 
@@ -74,6 +74,7 @@ from app.services.intervention_policy import (
     human_recently_active,
 )
 from app.services.voice_interventions import enqueue_generated_intervention
+from app.services.incident_report import build_incident_report
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -199,6 +200,10 @@ class DecisionVerificationRequest(BaseModel):
     observed_metric: str
     source: str
     verified_by: str
+
+
+class AgentCommandRequest(BaseModel):
+    command: Literal["summary", "review_gaps", "review_actions"]
 
 
 def _transcript_payload(event: EventLog, speaker: str, role: str, text: str, timestamp: str):
@@ -467,6 +472,7 @@ def get_state(db: Session = Depends(get_db)):
     conflicts = db.query(Conflict).all()
     participants = db.query(Participant).all()
     interventions = db.query(Intervention).all()
+    unknowns = db.query(Unknown).all()
     
     return {
         "facts": facts,
@@ -477,7 +483,42 @@ def get_state(db: Session = Depends(get_db)):
         "conflicts": conflicts,
         "participants": participants,
         "interventions": interventions,
+        "unknowns": unknowns,
     }
+
+
+@app.post("/api/agent/command")
+async def agent_command(request: AgentCommandRequest, db: Session = Depends(get_db)):
+    commands = {
+        "summary": ("SUMMARY_REQUEST", "MEDIUM"),
+        "review_gaps": ("UNRESOLVED_REVIEW", "HIGH"),
+        "review_actions": ("ACTION_OWNERSHIP_REVIEW", "HIGH"),
+    }
+    trigger, severity = commands[request.command]
+    # Refresh explicit unknowns before Gemini receives its state snapshot.
+    alerts = scan_for_unresolved("INC-001", db)
+    created = await enqueue_generated_intervention(
+        trigger, severity, db,
+        trigger_context={
+            "requested_from": "command_center",
+            "open_alerts": [alert.description for alert in alerts[:10]],
+        },
+        bypass_severity_threshold=True,
+    )
+    if created is None:
+        raise HTTPException(
+            status_code=409,
+            detail="No active voice agent, or this command is already queued in the cooldown window.",
+        )
+    await INTERVENTION_MONITOR.scan_and_dispatch()
+    return created
+
+
+@app.get("/api/agent/report")
+def agent_report(incident_id: str = "INC-001", db: Session = Depends(get_db)):
+    # The report is deterministic and evidence-bound; it never invents missing facts.
+    scan_for_unresolved(incident_id, db)
+    return build_incident_report(db, incident_id)
 
 @app.post("/api/evidence")
 def ingest_evidence_endpoint(evidence: EvidenceInput, db: Session = Depends(get_db)):
