@@ -96,3 +96,122 @@ export const MOCK_PAYMENT_OUTAGE = {
 };
 
 export const MOCK_PAYMENT_OUTAGE_TRANSCRIPTS = transcripts;
+
+export const MOCK_REPLAY_STAGES = [
+  {
+    label: 'Signal detected',
+    title: 'A P1 checkout outage enters the room',
+    narration: 'ResQVoice recognizes the severity, customer impact, and affected transaction path directly from the call.',
+    cue: 'Start here: responders only describe what they can observe.',
+  },
+  {
+    label: 'Evidence conflict',
+    title: 'The evidence does not agree yet',
+    narration: 'The platform is failing, but core payment health checks are green. The agent turns that contradiction into two explicit investigation questions.',
+    cue: 'Point out that uncertainty is recorded instead of silently ignored.',
+  },
+  {
+    label: 'Agent intervention',
+    title: 'The agent joins the conversation',
+    narration: 'After a natural pause, ResQVoice explains the component-level mismatch and announces the check it is performing next.',
+    cue: 'Highlight that no responder clicked a button or issued a command.',
+  },
+  {
+    label: 'Root cause isolated',
+    title: 'Health, logs, and deployments converge',
+    narration: 'Autonomous tool calls connect database pool timeouts to pricing-servlet v2.18.4 and clear the evidence gaps.',
+    cue: 'Show the confidence change from 62% to 94%.',
+  },
+  {
+    label: 'Targeted action',
+    title: 'The smallest safe remediation executes',
+    narration: 'The agent restarts only the unhealthy pricing servlet in the demo sandbox and preserves the healthy payment workers.',
+    cue: 'Emphasize that a risky whole-platform restart was avoided.',
+  },
+  {
+    label: 'Recovery verified',
+    title: 'Evidence closes the loop',
+    narration: 'Error rate falls to 0.4%, synthetic checkout passes, owners are assigned, and the agent gives the room a concise recovery update.',
+    cue: 'Finish on 5/5 plan steps, zero unresolved signals, and the audit trail.',
+  },
+] as const;
+
+const stageCounts = [
+  { transcripts: 1, facts: 1, claims: 1, activities: 1 },
+  { transcripts: 4, facts: 3, claims: 4, activities: 2 },
+  { transcripts: 5, facts: 3, claims: 4, activities: 3 },
+  { transcripts: 6, facts: 4, claims: 5, activities: 5 },
+  { transcripts: 8, facts: 4, claims: 5, activities: 8 },
+  { transcripts: 10, facts: 5, claims: 6, activities: 10 },
+] as const;
+
+export function buildMockReplayState(requestedStage: number) {
+  const stage = Math.max(0, Math.min(requestedStage, MOCK_REPLAY_STAGES.length - 1));
+  const counts = stageCounts[stage];
+  const planDone = stage;
+  const plan = MOCK_PAYMENT_OUTAGE.agent_runtime.plan.map((item, index) => ({
+    ...item,
+    status: index < planDone ? 'DONE' : index === planDone ? 'ACTIVE' : 'PENDING',
+  }));
+
+  const hypotheses = stage < 1
+    ? []
+    : MOCK_PAYMENT_OUTAGE.hypotheses.map((item, index) => ({
+        ...item,
+        confidence: stage >= 3 ? item.confidence : index === 0 ? 0.62 : 0.35,
+        status: stage >= 3 ? item.status : 'UNCONFIRMED',
+      }));
+  const conflicts = stage < 1
+    ? []
+    : MOCK_PAYMENT_OUTAGE.conflicts.map(item => ({ ...item, status: stage >= 3 ? 'RESOLVED' : 'OPEN' }));
+  const unknowns = stage < 1
+    ? []
+    : MOCK_PAYMENT_OUTAGE.unknowns.map(item => ({ ...item, status: stage >= 3 ? 'RESOLVED' : 'OPEN' }));
+  const actions = stage < 2
+    ? []
+    : stage === 2
+      ? [{ ...MOCK_PAYMENT_OUTAGE.actions[0], owner: 'Meera Iyer', status: 'IN_PROGRESS' }]
+      : stage === 3
+        ? [{ ...MOCK_PAYMENT_OUTAGE.actions[0], status: 'IN_PROGRESS' }]
+        : stage === 4
+          ? MOCK_PAYMENT_OUTAGE.actions.slice(0, 3)
+          : MOCK_PAYMENT_OUTAGE.actions;
+  const decisions = stage < 3
+    ? []
+    : stage < 5
+      ? [{ ...MOCK_PAYMENT_OUTAGE.decisions[0], execution_status: stage === 3 ? 'APPROVED' : 'COMPLETED' }]
+      : MOCK_PAYMENT_OUTAGE.decisions;
+  const stageTranscript = transcripts.slice(0, counts.transcripts);
+  const runtime = stage === 0 ? null : {
+    ...MOCK_PAYMENT_OUTAGE.agent_runtime,
+    timestamp: stageTranscript.at(-1)?.timestamp ?? at(stage),
+    plan,
+    tool_calls: stage < 2 ? [] : MOCK_PAYMENT_OUTAGE.agent_runtime.tool_calls.slice(0, stage >= 3 ? 3 : 1),
+    diagnosis: stage >= 3 ? MOCK_PAYMENT_OUTAGE.agent_runtime.diagnosis : undefined,
+    remediation: stage >= 4 ? MOCK_PAYMENT_OUTAGE.agent_runtime.remediation : undefined,
+    recovery_check: stage >= 5 ? MOCK_PAYMENT_OUTAGE.agent_runtime.recovery_check : null,
+    hypothesis_updates: stage >= 3 ? MOCK_PAYMENT_OUTAGE.agent_runtime.hypothesis_updates : [],
+    next_question: [
+      '',
+      'I found conflicting health signals. I am checking which component is actually failing.',
+      "Core payments is healthy, but the pricing servlet is failing its database check. I'm inspecting its logs and latest deployment now.",
+      'I isolated the fault to pricing-servlet v2.18.4. I am preparing the smallest safe recovery action.',
+      'I restarted only the affected pricing servlet. I am verifying checkout recovery before we stand down.',
+      MOCK_PAYMENT_OUTAGE.agent_runtime.next_question,
+    ][stage],
+  };
+
+  return {
+    ...MOCK_PAYMENT_OUTAGE,
+    facts: MOCK_PAYMENT_OUTAGE.facts.slice(0, counts.facts),
+    hypotheses,
+    actions,
+    decisions,
+    claims: MOCK_PAYMENT_OUTAGE.claims.slice(0, counts.claims),
+    conflicts,
+    unknowns,
+    agent_runtime: runtime,
+    agent_activity: MOCK_PAYMENT_OUTAGE.agent_activity.slice(-counts.activities),
+    transcripts: stageTranscript,
+  };
+}

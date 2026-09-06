@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { BACKEND_URL } from '../lib/backend';
 import {
@@ -17,12 +17,15 @@ import {
   Link2,
   ListTodo,
   MessageSquare,
+  Pause,
+  Play,
   Radio,
   RefreshCw,
   RotateCcw,
   SearchCheck,
   ShieldCheck,
   ShieldAlert,
+  SkipForward,
   Sparkles,
   TestTube2,
   UserRound,
@@ -40,7 +43,7 @@ import type {
   TranscriptEvent,
   Unknown,
 } from '../types';
-import { MOCK_PAYMENT_OUTAGE } from '../data/mockIncident';
+import { buildMockReplayState, MOCK_PAYMENT_OUTAGE, MOCK_REPLAY_STAGES } from '../data/mockIncident';
 
 interface State {
   facts: Fact[];
@@ -148,6 +151,9 @@ export default function Dashboard() {
   const [state, setState] = useState<State | null>(null);
   const [loading, setLoading] = useState(true);
   const [useMockData, setUseMockData] = useState(false);
+  const [demoReplayActive, setDemoReplayActive] = useState(false);
+  const [demoReplayPlaying, setDemoReplayPlaying] = useState(false);
+  const [demoReplayStep, setDemoReplayStep] = useState(0);
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proposedAction, setProposedAction] = useState('Restart only pricing-servlet v2.18.4 and drain orphaned database sessions');
@@ -169,6 +175,23 @@ export default function Dashboard() {
   const [agentCommand, setAgentCommand] = useState<string | null>(null);
   const [incidentReport, setIncidentReport] = useState<IncidentReport | null>(null);
   const [visibleAgentStage, setVisibleAgentStage] = useState(4);
+
+  const startGuidedReplay = () => {
+    setUseMockData(true);
+    setDemoReplayActive(true);
+    setDemoReplayStep(0);
+    setDemoReplayPlaying(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const toggleMockData = () => {
+    const enabled = !useMockData;
+    setUseMockData(enabled);
+    if (!enabled) {
+      setDemoReplayActive(false);
+      setDemoReplayPlaying(false);
+    }
+  };
 
   const fetchState = async () => {
     try {
@@ -231,6 +254,14 @@ export default function Dashboard() {
     return () => eventSource.close();
   }, []);
 
+  useEffect(() => {
+    if (!demoReplayActive || !demoReplayPlaying || demoReplayStep >= MOCK_REPLAY_STAGES.length - 1) return;
+    const timer = window.setTimeout(() => {
+      setDemoReplayStep(step => Math.min(step + 1, MOCK_REPLAY_STAGES.length - 1));
+    }, 4_800);
+    return () => window.clearTimeout(timer);
+  }, [demoReplayActive, demoReplayPlaying, demoReplayStep]);
+
   const handleResetWorkspace = async () => {
     const confirmed = window.confirm(
       'Reset Workspace will permanently clear all live transcripts and incident state. Continue?',
@@ -241,6 +272,8 @@ export default function Dashboard() {
     try {
       await axios.post(`${BACKEND_URL}/api/workspace/reset`);
       setUseMockData(false);
+      setDemoReplayActive(false);
+      setDemoReplayPlaying(false);
       setState(EMPTY_STATE);
       await fetchState();
     } catch (resetError) {
@@ -366,11 +399,13 @@ export default function Dashboard() {
 
   const liveState = state ?? EMPTY_STATE;
   const safeState: State = useMockData
-    ? { ...EMPTY_STATE, ...MOCK_PAYMENT_OUTAGE }
+    ? { ...EMPTY_STATE, ...(demoReplayActive ? buildMockReplayState(demoReplayStep) : MOCK_PAYMENT_OUTAGE) } as State
     : liveState;
+  const replayStage = MOCK_REPLAY_STAGES[demoReplayStep];
+  const replayComplete = demoReplayStep === MOCK_REPLAY_STAGES.length - 1;
 
   useEffect(() => {
-    if (!state?.agent_runtime?.timestamp) return;
+    if (!safeState.agent_runtime?.timestamp) return;
     // Replay the observable loop when a new autonomous result reaches the UI.
     // oxlint-disable-next-line react/set-state-in-effect
     setVisibleAgentStage(0);
@@ -381,9 +416,9 @@ export default function Dashboard() {
       if (stage >= 4) window.clearInterval(interval);
     }, 850);
     return () => window.clearInterval(interval);
-  }, [state?.agent_runtime?.timestamp]);
+  }, [safeState.agent_runtime?.timestamp]);
 
-  const roleSummaries = useMemo(() => {
+  const roleSummaries = (() => {
     const roles = new Map<string, { count: number; speakers: Set<string> }>();
     safeState.transcripts.forEach(item => {
       const current = roles.get(item.role) ?? { count: 0, speakers: new Set<string>() };
@@ -394,7 +429,7 @@ export default function Dashboard() {
     return Array.from(roles.entries())
       .map(([role, details]) => ({ role, count: details.count, speakers: Array.from(details.speakers) }))
       .sort((a, b) => b.count - a.count);
-  }, [safeState.transcripts]);
+  })();
 
   const openHypotheses = safeState.hypotheses.filter(hypothesis =>
     !['REJECTED', 'CONFIRMED'].includes(hypothesis.status),
@@ -437,9 +472,13 @@ export default function Dashboard() {
             <RefreshCw size={14} aria-hidden="true" />
             Sync
           </button>
+          <button className="btn btn-primary" onClick={startGuidedReplay}>
+            <Play size={14} aria-hidden="true" />
+            {demoReplayActive ? 'Restart guided replay' : 'Guided demo replay'}
+          </button>
           <button
             className={`btn ${useMockData ? 'mock-toggle-active' : 'btn-secondary'}`}
-            onClick={() => setUseMockData(enabled => !enabled)}
+            onClick={toggleMockData}
             aria-pressed={useMockData}
           >
             <TestTube2 size={14} aria-hidden="true" />
@@ -465,6 +504,52 @@ export default function Dashboard() {
           <strong>MOCK DATA ACTIVE</strong>
           <span>Isolated payment-outage fixture. Live backend data remains unchanged and hidden.</span>
         </div>
+      )}
+
+      {demoReplayActive && (
+        <section className="guided-replay" aria-live="polite" aria-label="Guided demo replay">
+          <div className="guided-replay-glow" aria-hidden="true" />
+          <div className="guided-replay-copy">
+            <div className="guided-replay-kicker">
+              <span className="guided-replay-live"><span /> GUIDED REPLAY</span>
+              <span>Chapter {demoReplayStep + 1} of {MOCK_REPLAY_STAGES.length}</span>
+            </div>
+            <h2>{replayStage.title}</h2>
+            <p>{replayStage.narration}</p>
+            <div className="guided-replay-cue"><Sparkles size={14} aria-hidden="true" /><span>{replayStage.cue}</span></div>
+          </div>
+          <div className="guided-replay-controls">
+            <button
+              className="btn btn-primary"
+              onClick={() => setDemoReplayPlaying(playing => !playing)}
+              disabled={replayComplete}
+            >
+              {demoReplayPlaying && !replayComplete ? <Pause size={14} /> : <Play size={14} />}
+              {replayComplete ? 'Replay complete' : demoReplayPlaying ? 'Pause' : 'Resume'}
+            </button>
+            <button className="btn btn-secondary" onClick={startGuidedReplay}><RotateCcw size={14} />Restart</button>
+            <button
+              className="btn btn-secondary"
+              disabled={replayComplete}
+              onClick={() => setDemoReplayStep(step => Math.min(step + 1, MOCK_REPLAY_STAGES.length - 1))}
+            >
+              Next <SkipForward size={14} />
+            </button>
+          </div>
+          <div className="guided-replay-progress" aria-label={`Replay progress: ${demoReplayStep + 1} of ${MOCK_REPLAY_STAGES.length}`}>
+            {MOCK_REPLAY_STAGES.map((stage, index) => (
+              <button
+                key={stage.label}
+                className={index < demoReplayStep ? 'is-complete' : index === demoReplayStep ? 'is-active' : ''}
+                onClick={() => setDemoReplayStep(index)}
+                title={`Go to ${stage.label}`}
+              >
+                <span>{index < demoReplayStep ? <CheckCircle2 size={13} /> : index + 1}</span>
+                <small>{stage.label}</small>
+              </button>
+            ))}
+          </div>
+        </section>
       )}
 
       <section className="surface-panel health-panel" aria-labelledby="incident-health-title">
