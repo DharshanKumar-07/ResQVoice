@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models import Action, Conflict, EventLog, Fact, Hypothesis, Intervention, Participant, Unknown
-from app.schemas import HypothesisStatus
+from app.schemas import ActionStatus, HypothesisStatus
 from app.services.observability import log_event
 
 
@@ -202,11 +202,12 @@ def agent_activity_feed(db: Session, limit: int = 32) -> list[dict[str, Any]]:
                 "id": f"event-{event.id}", "timestamp": timestamp, "phase": phase,
                 "title": title, "detail": str(payload.get("text") or "")[:240], "status": "complete",
             })
-        elif event.event_type in {"REMEDIATION_SELECTED", "REMEDIATION_EXECUTED", "RECOVERY_CHECK"}:
+        elif event.event_type in {"REMEDIATION_SELECTED", "REMEDIATION_EXECUTED", "RECOVERY_CHECK", "RECOVERY_RECONCILED"}:
             labels = {
                 "REMEDIATION_SELECTED": ("remediate", "Selected the smallest safe remediation"),
                 "REMEDIATION_EXECUTED": ("remediate", "Executed sandbox remediation"),
                 "RECOVERY_CHECK": ("verify", "Ran post-remediation health checks"),
+                "RECOVERY_RECONCILED": ("update", "Reconciled the incident state"),
             }
             phase, title = labels[event.event_type]
             feed.append({
@@ -224,6 +225,37 @@ def agent_activity_feed(db: Session, limit: int = 32) -> list[dict[str, Any]]:
             "detail": row.message, "status": "active" if row.status in {"PENDING", "DEFERRED"} else "complete",
         })
     return sorted(feed, key=lambda item: item["timestamp"], reverse=True)[:limit]
+
+
+def reconcile_recovery_state(db: Session, recovery_fact: str) -> dict[str, int]:
+    """Close outage-era hypotheses and recovery actions once recovery is verified."""
+    hypothesis_count = 0
+    action_count = 0
+    outage_terms = ("down", "outage", "failing", "503", "unavailable")
+    recovery_terms = ("restore", "recover", "restart", "investigate", "stabilize")
+    for row in db.query(Hypothesis).all():
+        if _status(row.status) in {"UNCONFIRMED", "CORROBORATED", "DISPUTED"} and any(
+            term in row.description.lower() for term in outage_terms
+        ):
+            row.status = HypothesisStatus.REJECTED
+            evidence = list(row.contradicting_evidence or [])
+            if recovery_fact not in evidence:
+                evidence.append(recovery_fact)
+            row.contradicting_evidence = evidence
+            hypothesis_count += 1
+    for row in db.query(Action).all():
+        if _status(row.status) not in {"COMPLETED", "CANCELLED"} and any(
+            term in row.task.lower() for term in recovery_terms
+        ):
+            row.status = ActionStatus.COMPLETED
+            action_count += 1
+    if hypothesis_count or action_count:
+        db.add(EventLog(event_type="RECOVERY_RECONCILED", payload={
+            "detail": f"Closed {hypothesis_count} outage hypothesis/hypotheses and {action_count} recovery action(s) using verified recovery evidence.",
+            "status": "COMPLETED",
+        }))
+        db.commit()
+    return {"hypotheses_closed": hypothesis_count, "actions_completed": action_count}
 
 
 def run_autonomous_outage_playbook(
@@ -284,6 +316,7 @@ def run_autonomous_outage_playbook(
             "detail": f"{recovery_fact} Customer-impact metric returned to baseline.",
             "status": "RECOVERY_VERIFIED",
         }))
+        reconcile_recovery_state(db, recovery_fact)
     else:
         recovery = None
 
@@ -309,6 +342,7 @@ def run_autonomous_outage_playbook(
         "tool_call": checks[-1], "tool_calls": checks,
         "diagnosis": diagnosis,
         "remediation": {"action": remediation, "status": remediation_status, "mode": "DEMO_SANDBOX"},
+        "recovery_check": recovery,
         "recommended_owner": owner, "hypothesis_updates": [],
         "next_question": "Recovery is verified. Please confirm checkout success from a customer path." if auto_execute else f"Approve this targeted remediation: {remediation}?",
     }

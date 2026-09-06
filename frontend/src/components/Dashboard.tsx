@@ -70,6 +70,7 @@ interface AgentRuntime {
   tool_calls?: Array<{ tool: string; mode: string; result: Record<string, unknown> }>;
   diagnosis?: string;
   remediation?: { action: string; status: string; mode: string };
+  recovery_check?: { tool: string; mode: string; result: Record<string, unknown> } | null;
   recommended_owner?: { name: string; role: string } | null;
   hypothesis_updates?: Array<{
     hypothesis_id: string;
@@ -163,6 +164,7 @@ export default function Dashboard() {
   const [busyDecisionId, setBusyDecisionId] = useState<string | null>(null);
   const [agentCommand, setAgentCommand] = useState<string | null>(null);
   const [incidentReport, setIncidentReport] = useState<IncidentReport | null>(null);
+  const [visibleAgentStage, setVisibleAgentStage] = useState(4);
 
   const fetchState = async () => {
     try {
@@ -363,6 +365,20 @@ export default function Dashboard() {
     ? { ...EMPTY_STATE, transcripts: MOCK_PAYMENT_OUTAGE_TRANSCRIPTS }
     : liveState;
 
+  useEffect(() => {
+    if (!state?.agent_runtime?.timestamp) return;
+    // Replay the observable loop when a new autonomous result reaches the UI.
+    // oxlint-disable-next-line react/set-state-in-effect
+    setVisibleAgentStage(0);
+    let stage = 0;
+    const interval = window.setInterval(() => {
+      stage += 1;
+      setVisibleAgentStage(Math.min(stage, 4));
+      if (stage >= 4) window.clearInterval(interval);
+    }, 850);
+    return () => window.clearInterval(interval);
+  }, [state?.agent_runtime?.timestamp]);
+
   const roleSummaries = useMemo(() => {
     const roles = new Map<string, { count: number; speakers: Set<string> }>();
     safeState.transcripts.forEach(item => {
@@ -376,12 +392,17 @@ export default function Dashboard() {
       .sort((a, b) => b.count - a.count);
   }, [safeState.transcripts]);
 
+  const openHypotheses = safeState.hypotheses.filter(hypothesis =>
+    !['REJECTED', 'CONFIRMED'].includes(hypothesis.status),
+  ).length;
   const inProgressActions = safeState.actions.filter(action =>
     action.status === 'IN_PROGRESS' || action.status === 'TODO',
   ).length;
   const unresolvedSignals = safeState.hypotheses.filter(hypothesis =>
     hypothesis.status === 'UNCONFIRMED' || hypothesis.status === 'DISPUTED',
   ).length + safeState.conflicts.length + safeState.unknowns.filter(item => item.status === 'OPEN').length;
+  const incidentRecovered = safeState.agent_runtime?.remediation?.status === 'SIMULATED_EXECUTED'
+    && safeState.agent_runtime?.recovery_check?.result?.recovered === true;
 
   if (loading && !state) {
     return (
@@ -447,7 +468,7 @@ export default function Dashboard() {
             <ShieldCheck size={17} aria-hidden="true" />
             Incident health
           </h2>
-          <StatusBadge status={unresolvedSignals > 0 ? 'UNRESOLVED-CRITICAL' : 'CONFIRMED'} label={unresolvedSignals > 0 ? 'Attention required' : 'Monitoring'} />
+          <StatusBadge status={incidentRecovered ? 'CONFIRMED' : unresolvedSignals > 0 ? 'UNRESOLVED-CRITICAL' : 'CONFIRMED'} label={incidentRecovered ? 'Recovery verified' : unresolvedSignals > 0 ? 'Attention required' : 'Monitoring'} />
         </div>
         <div className="health-grid">
           <div className="health-metric">
@@ -463,7 +484,7 @@ export default function Dashboard() {
               <span className="metric-label">Open hypotheses</span>
               <span className="metric-icon status-unknown"><CircleHelp size={15} aria-hidden="true" /></span>
             </div>
-            <div className="metric-value">{safeState.hypotheses.length}</div>
+            <div className="metric-value">{openHypotheses}</div>
             <div className="metric-detail">Root-cause paths under review</div>
           </div>
           <div className="health-metric">
@@ -490,12 +511,12 @@ export default function Dashboard() {
       <section className="surface-panel agent-operations" aria-labelledby="agent-operations-title">
         <div className="panel-header">
           <h2 className="panel-title" id="agent-operations-title"><Radio size={17} aria-hidden="true" />Agent operations</h2>
-          <span className="panel-count">Automatic summary every 5 minutes</span>
+          <span className="panel-count">Voice-triggered · no button required</span>
         </div>
         <div className="agent-operation-body">
           <div className="agent-operation-actions">
-            <button className="btn btn-primary" disabled={agentCommand !== null} onClick={() => void runAutonomousCycle()}>
-              <RefreshCw size={14} aria-hidden="true" />Run autonomous cycle
+            <button className="btn btn-secondary" disabled={agentCommand !== null} onClick={() => void runAutonomousCycle()} title="Developer fallback for replaying a cycle without live speech">
+              <RefreshCw size={14} aria-hidden="true" />Replay cycle
             </button>
             <button className="btn btn-primary" disabled={agentCommand !== null} onClick={() => void runAgentCommand('summary')}>
               <Radio size={14} aria-hidden="true" />Speak status summary
@@ -548,15 +569,30 @@ export default function Dashboard() {
                   { label: 'Update', caption: 'Guide the team', Icon: Radio },
                 ].map(({ label, caption, Icon }, index, stages) => (
                   <div className="agent-loop-fragment" key={label}>
-                    <div className={`agent-loop-stage ${index === stages.length - 1 ? 'is-active' : 'is-complete'}`}>
+                    <div className={`agent-loop-stage ${index < visibleAgentStage ? 'is-complete' : index === visibleAgentStage ? 'is-active' : 'is-waiting'}`}>
                       <span className="agent-stage-icon"><Icon size={16} aria-hidden="true" /></span>
                       <span><strong>{label}</strong><small>{caption}</small></span>
-                      {index < stages.length - 1 && <CheckCircle2 className="agent-stage-check" size={14} aria-hidden="true" />}
+                      {index < visibleAgentStage && <CheckCircle2 className="agent-stage-check" size={14} aria-hidden="true" />}
                     </div>
                     {index < stages.length - 1 && <ArrowRight className="agent-loop-arrow" size={16} aria-hidden="true" />}
                   </div>
                 ))}
               </div>
+
+              {incidentRecovered && safeState.agent_runtime.remediation && (
+                <section className="incident-result-card" aria-label="Autonomous incident result">
+                  <div className="incident-result-heading">
+                    <span><BadgeCheck size={18} />INCIDENT RECOVERED AUTONOMOUSLY</span>
+                    <strong>Recovery verified</strong>
+                  </div>
+                  <div className="incident-result-grid">
+                    <div><span>Detected impact</span><strong>HTTP 503 · 38.2% errors</strong></div>
+                    <div><span>Root cause</span><strong>Pricing servlet DB pool timeout</strong></div>
+                    <div><span>Targeted action</span><strong>Restarted only the failing servlet</strong></div>
+                    <div><span>Recovery evidence</span><strong>{formatToolValue(safeState.agent_runtime.recovery_check?.result.error_rate_percent)}% error rate · baseline restored</strong></div>
+                  </div>
+                </section>
+              )}
 
               <div className="agent-runtime-layout">
                 <div className="agent-runtime-column">

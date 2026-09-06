@@ -28,7 +28,7 @@ class ArrayAsJSON(TypeDecorator):
 sa.ARRAY = lambda item_type, *args, **kwargs: ArrayAsJSON()  # type: ignore[assignment]
 
 from app.database import Base
-from app.models import Action, EventLog, Fact, Intervention as InterventionRow, Unknown
+from app.models import Action, EventLog, Fact, Hypothesis, Intervention as InterventionRow, Unknown
 from app.schemas import ActionStatus, HypothesisStatus, Participant
 from app.services.incident_report import build_incident_report
 from app.services.agentic_runtime import (
@@ -234,6 +234,16 @@ def test_agent_activity_feed_exposes_auditable_background_stages(db):
 def test_outage_language_automatically_drives_diagnosis_and_sandbox_recovery(db):
     assert is_outage_trigger("The prod is down and payments are failing") is True
     assert is_outage_trigger("We are reviewing the sprint backlog") is False
+    db.add(Hypothesis(
+        id="outage-hypothesis", description="Production is down", origin="Priya",
+        supporting_evidence=[], contradicting_evidence=[], confidence=0.8,
+        status=HypothesisStatus.UNCONFIRMED,
+    ))
+    db.add(Action(
+        id="restore-action", task="Investigate and restore service", owner="Team",
+        status=ActionStatus.TODO, priority="HIGH",
+    ))
+    db.commit()
 
     cycle = run_autonomous_outage_playbook(
         db, "The prod is down and payments are failing", trigger_event_id=77,
@@ -249,6 +259,9 @@ def test_outage_language_automatically_drives_diagnosis_and_sandbox_recovery(db)
     assert all(step["status"] == "DONE" for step in cycle["plan"])
     assert db.query(EventLog).filter_by(event_type="REMEDIATION_EXECUTED").count() == 1
     assert db.query(EventLog).filter_by(event_type="RECOVERY_CHECK").count() == 1
+    assert db.query(Hypothesis).filter_by(id="outage-hypothesis").one().status == HypothesisStatus.REJECTED
+    assert db.query(Action).filter_by(id="restore-action").one().status == ActionStatus.COMPLETED
+    assert db.query(EventLog).filter_by(event_type="RECOVERY_RECONCILED").count() == 1
 
     same_cycle = run_autonomous_outage_playbook(
         db, "The prod is down and payments are failing", trigger_event_id=77,

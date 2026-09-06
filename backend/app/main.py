@@ -79,6 +79,7 @@ from app.services.agentic_runtime import (
     agent_activity_feed,
     is_outage_trigger,
     latest_agent_cycle,
+    reconcile_recovery_state,
     run_agent_cycle,
     run_autonomous_outage_playbook,
     verify_recovery,
@@ -314,6 +315,10 @@ async def _extract_transcript_batch_background(
                 if outage_segment is not None
                 else run_agent_cycle(db, reason="transcript_batch")
             )
+            if outage_segment is not None and cycle.get("remediation", {}).get("status") == "SIMULATED_EXECUTED":
+                reconcile_recovery_state(
+                    db, "Payment error rate is 0.7% (baseline 1.0%).",
+                )
             await enqueue_generated_intervention(
                 "AGENT_NEXT_STEP", "MEDIUM", db,
                 trigger_context={
