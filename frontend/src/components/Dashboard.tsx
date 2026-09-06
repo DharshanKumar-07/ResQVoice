@@ -3,10 +3,13 @@ import axios from 'axios';
 import { BACKEND_URL } from '../lib/backend';
 import {
   Activity,
+  ArrowRight,
   AlertOctagon,
   AlertTriangle,
   BadgeCheck,
   CheckCircle2,
+  Database,
+  Eye,
   CircleHelp,
   Clock3,
   FileText,
@@ -20,8 +23,10 @@ import {
   SearchCheck,
   ShieldCheck,
   ShieldAlert,
+  Sparkles,
   TestTube2,
   UserRound,
+  Wrench,
   XCircle,
 } from 'lucide-react';
 import type {
@@ -46,6 +51,7 @@ interface State {
   conflicts: Conflict[];
   unknowns: Unknown[];
   agent_runtime: AgentRuntime | null;
+  agent_activity: AgentActivityItem[];
   transcripts: TranscriptEvent[];
 }
 
@@ -62,7 +68,22 @@ interface AgentRuntime {
   activity: string[];
   tool_call: { tool: string; mode: string; result: Record<string, unknown> };
   recommended_owner?: { name: string; role: string } | null;
+  hypothesis_updates?: Array<{
+    hypothesis_id: string;
+    previous_confidence: number;
+    new_confidence: number;
+    evidence_overlap: string[];
+  }>;
   next_question: string;
+}
+
+interface AgentActivityItem {
+  id: string;
+  timestamp: string;
+  phase: string;
+  title: string;
+  detail: string;
+  status: 'active' | 'complete';
 }
 
 const EMPTY_STATE: State = {
@@ -74,6 +95,7 @@ const EMPTY_STATE: State = {
   conflicts: [],
   unknowns: [],
   agent_runtime: null,
+  agent_activity: [],
   transcripts: [],
 };
 
@@ -111,6 +133,11 @@ function StatusBadge({ status, label }: { status: string; label?: string }) {
 function formatTime(timestamp?: string) {
   if (!timestamp) return '—';
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatToolValue(value: unknown) {
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  return String(value);
 }
 
 export default function Dashboard() {
@@ -496,33 +523,108 @@ export default function Dashboard() {
               <pre>{incidentReport.markdown}</pre>
             </div>
           )}
-          {safeState.agent_runtime && (
-            <div className="agent-runtime-grid">
-              <div className="agent-runtime-card">
-                <div className="item-top"><strong>Current objective</strong><time className="item-meta mono">{formatTime(safeState.agent_runtime.timestamp)}</time></div>
-                <p className="item-text">{safeState.agent_runtime.objective}</p>
-                <div className="agent-plan">
-                  {safeState.agent_runtime.plan.map(item => (
-                    <div className="agent-plan-step" key={item.step}>
-                      <StatusBadge status={item.status} />
-                      <span>{item.step}</span>
+          {safeState.agent_runtime ? (
+            <div className="agent-activity-center">
+              <div className="agent-loop-header">
+                <div>
+                  <div className="agent-live-label"><span className="agent-live-dot" />AUTONOMOUS LOOP LIVE</div>
+                  <h3>How the agent is moving the incident forward</h3>
+                </div>
+                <div className="agent-loop-meta">
+                  <span>Last cycle {formatTime(safeState.agent_runtime.timestamp)}</span>
+                  <span className="status-badge status-corroborated">Demo · read only</span>
+                </div>
+              </div>
+
+              <div className="agent-loop" aria-label="Agent workflow">
+                {[
+                  { label: 'Observe', caption: 'Listen to responders', Icon: Eye },
+                  { label: 'Plan', caption: 'Find the next gap', Icon: Sparkles },
+                  { label: 'Act', caption: 'Call a safe tool', Icon: Wrench },
+                  { label: 'Verify', caption: 'Ground in evidence', Icon: ShieldCheck },
+                  { label: 'Update', caption: 'Guide the team', Icon: Radio },
+                ].map(({ label, caption, Icon }, index, stages) => (
+                  <div className="agent-loop-fragment" key={label}>
+                    <div className={`agent-loop-stage ${index === stages.length - 1 ? 'is-active' : 'is-complete'}`}>
+                      <span className="agent-stage-icon"><Icon size={16} aria-hidden="true" /></span>
+                      <span><strong>{label}</strong><small>{caption}</small></span>
+                      {index < stages.length - 1 && <CheckCircle2 className="agent-stage-check" size={14} aria-hidden="true" />}
                     </div>
-                  ))}
-                </div>
+                    {index < stages.length - 1 && <ArrowRight className="agent-loop-arrow" size={16} aria-hidden="true" />}
+                  </div>
+                ))}
               </div>
-              <div className="agent-runtime-card">
-                <strong>Latest observable activity</strong>
-                <ul>{safeState.agent_runtime.activity.map(item => <li key={item}>{item}</li>)}</ul>
-                <div className="tool-call-card">
-                  <span className="status-badge status-corroborated">Read-only tool</span>
-                  <strong>{safeState.agent_runtime.tool_call.tool}</strong>
-                  <code>{JSON.stringify(safeState.agent_runtime.tool_call.result)}</code>
+
+              <div className="agent-runtime-layout">
+                <div className="agent-runtime-column">
+                  <article className="agent-runtime-card agent-objective-card">
+                    <div className="agent-card-eyebrow"><Sparkles size={13} />CURRENT OBJECTIVE</div>
+                    <p>{safeState.agent_runtime.objective}</p>
+                  </article>
+                  <article className="agent-runtime-card">
+                    <div className="agent-card-heading"><strong>Live response plan</strong><span>{safeState.agent_runtime.plan.filter(item => item.status === 'DONE').length}/{safeState.agent_runtime.plan.length} cleared</span></div>
+                    <div className="agent-plan">
+                      {safeState.agent_runtime.plan.map((item, index) => (
+                        <div className={`agent-plan-step plan-${item.status.toLowerCase()}`} key={item.step}>
+                          <span className="agent-plan-number">{item.status === 'DONE' ? <CheckCircle2 size={14} /> : index + 1}</span>
+                          <span>{item.step}</span>
+                          <StatusBadge status={item.status} />
+                        </div>
+                      ))}
+                    </div>
+                  </article>
+                  <article className="agent-runtime-card">
+                    <div className="agent-card-heading"><strong>Latest tool execution</strong><span className="status-badge status-corroborated">Safe · read only</span></div>
+                    <div className="tool-call-card">
+                      <div className="tool-call-name"><Database size={15} /><strong>{safeState.agent_runtime.tool_call.tool.replaceAll('_', ' ')}</strong></div>
+                      <div className="tool-result-grid">
+                        {Object.entries(safeState.agent_runtime.tool_call.result).map(([key, value]) => (
+                          <div className="tool-result" key={key}><span>{key.replaceAll('_', ' ')}</span><strong>{formatToolValue(value)}</strong></div>
+                        ))}
+                      </div>
+                    </div>
+                    {(safeState.agent_runtime.hypothesis_updates ?? []).map(update => (
+                      <div className="confidence-update" key={update.hypothesis_id}>
+                        <span>Hypothesis confidence</span>
+                        <strong>{Math.round(update.previous_confidence * 100)}%</strong>
+                        <ArrowRight size={13} />
+                        <strong className="confidence-new">{Math.round(update.new_confidence * 100)}%</strong>
+                        <small>Matched: {update.evidence_overlap.join(', ')}</small>
+                      </div>
+                    ))}
+                  </article>
+                  <article className="agent-decision-card">
+                    <div className="agent-card-eyebrow"><Radio size={13} />NEXT TEAM PROMPT</div>
+                    <p>{safeState.agent_runtime.next_question}</p>
+                    {safeState.agent_runtime.recommended_owner && (
+                      <span><UserRound size={13} /> Suggested owner: <strong>{safeState.agent_runtime.recommended_owner.name}</strong> · {safeState.agent_runtime.recommended_owner.role}</span>
+                    )}
+                  </article>
                 </div>
-                {safeState.agent_runtime.recommended_owner && (
-                  <p className="item-meta">Recommended owner: <strong>{safeState.agent_runtime.recommended_owner.name}</strong> · {safeState.agent_runtime.recommended_owner.role}</p>
-                )}
-                <p className="agent-next-question"><strong>Next question:</strong> {safeState.agent_runtime.next_question}</p>
+
+                <article className="agent-runtime-card agent-feed-card">
+                  <div className="agent-card-heading"><strong>Background activity</strong><span className="agent-feed-live"><span />Streaming</span></div>
+                  <p className="agent-feed-intro">An auditable view of what the agent hears, extracts, checks, and communicates.</p>
+                  <div className="agent-event-feed">
+                    {safeState.agent_activity.slice(0, 14).map(item => (
+                      <div className={`agent-event event-${item.phase}`} key={item.id}>
+                        <div className="agent-event-rail"><span /></div>
+                        <div className="agent-event-content">
+                          <div className="agent-event-top"><span>{item.phase}</span><time>{formatTime(item.timestamp)}</time></div>
+                          <strong>{item.title}</strong>
+                          <p>{item.detail}</p>
+                        </div>
+                      </div>
+                    ))}
+                    {!safeState.agent_activity.length && <div className="empty-placeholder">Run an autonomous cycle to see the audit trail.</div>}
+                  </div>
+                </article>
               </div>
+            </div>
+          ) : (
+            <div className="agent-empty-state">
+              <Sparkles size={20} aria-hidden="true" />
+              <div><strong>The autonomous loop is ready</strong><p>Run a cycle or speak in the Voice Room to visualize the agent's work.</p></div>
             </div>
           )}
         </div>

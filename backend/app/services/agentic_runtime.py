@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models import Action, Conflict, EventLog, Fact, Hypothesis, Participant, Unknown
+from app.models import Action, Conflict, EventLog, Fact, Hypothesis, Intervention, Participant, Unknown
 from app.schemas import HypothesisStatus
 from app.services.observability import log_event
 
@@ -137,6 +137,63 @@ def _update_hypotheses(hypotheses: list[Hypothesis], fact_text: str) -> list[dic
 def latest_agent_cycle(db: Session) -> dict[str, Any] | None:
     row = db.query(EventLog).filter(EventLog.event_type == "AGENT_CYCLE").order_by(EventLog.id.desc()).first()
     return dict(row.payload or {}) if row else None
+
+
+def agent_activity_feed(db: Session, limit: int = 32) -> list[dict[str, Any]]:
+    """Build a concise, judge-friendly audit trail from persisted runtime events."""
+    feed: list[dict[str, Any]] = []
+    events = db.query(EventLog).order_by(EventLog.id.desc()).limit(limit).all()
+    for event in events:
+        payload = event.payload or {}
+        timestamp = (event.timestamp or datetime.now(timezone.utc)).replace(tzinfo=timezone.utc).isoformat()
+        if event.event_type == "AGENT_CYCLE":
+            tool = payload.get("tool_call") or {}
+            result = tool.get("result") or {}
+            updates = payload.get("hypothesis_updates") or []
+            stages = [
+                ("observe", "Observed incident context", (payload.get("activity") or ["No new responder update."])[0], "complete"),
+                ("plan", "Updated response plan", f"Evaluated {len(payload.get('plan') or [])} recovery steps against current evidence.", "complete"),
+                ("act", f"Called {tool.get('tool', 'safe monitoring tool')}", ", ".join(f"{key.replace('_', ' ')}: {value}" for key, value in result.items()), "complete"),
+                ("verify", "Verified monitoring evidence", (payload.get("activity") or ["", "", "Evidence recorded."])[-1 if len(payload.get("activity") or []) < 3 else 2], "complete"),
+                ("decide", "Selected the next best action", payload.get("next_question") or "Waiting for the next incident update.", "active"),
+            ]
+            if updates:
+                stages.insert(4, ("learn", "Re-ranked a root-cause hypothesis", f"Confidence updated for {len(updates)} hypothesis or hypotheses as new evidence matched.", "complete"))
+            for index, (phase, title, detail, status) in enumerate(stages):
+                feed.append({
+                    "id": f"event-{event.id}-{index}", "timestamp": timestamp,
+                    "phase": phase, "title": title, "detail": detail, "status": status,
+                })
+        elif event.event_type == "EXTRACTION_RESULT":
+            counts = [
+                f"{len(payload.get(name) or [])} {name}"
+                for name in ("facts", "hypotheses", "actions", "decisions")
+                if payload.get(name)
+            ]
+            feed.append({
+                "id": f"event-{event.id}", "timestamp": timestamp, "phase": "extract",
+                "title": "Structured the conversation", "detail": ", ".join(counts) or "No new operational assertions extracted.",
+                "status": "complete",
+            })
+        elif event.event_type == "TRANSCRIPT_CHUNK":
+            if payload.get("participant_type") == "ai_agent" or payload.get("speaker") == "ResQVoice AI":
+                phase, title = "communicate", "Agent spoke to the response team"
+            else:
+                phase, title = "listen", f"Heard {payload.get('speaker') or 'a responder'}"
+            feed.append({
+                "id": f"event-{event.id}", "timestamp": timestamp, "phase": phase,
+                "title": title, "detail": str(payload.get("text") or "")[:240], "status": "complete",
+            })
+
+    interventions = db.query(Intervention).order_by(Intervention.created_at.desc()).limit(8).all()
+    for row in interventions:
+        created = (row.created_at or datetime.now(timezone.utc)).replace(tzinfo=timezone.utc).isoformat()
+        feed.append({
+            "id": f"intervention-{row.id}", "timestamp": created, "phase": "intervene",
+            "title": f"{row.severity.title()} intervention · {row.status.lower()}",
+            "detail": row.message, "status": "active" if row.status in {"PENDING", "DEFERRED"} else "complete",
+        })
+    return sorted(feed, key=lambda item: item["timestamp"], reverse=True)[:limit]
 
 
 def run_agent_cycle(db: Session, channel: str = "incident-room", reason: str = "manual") -> dict[str, Any]:

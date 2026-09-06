@@ -75,7 +75,7 @@ from app.services.intervention_policy import (
 )
 from app.services.voice_interventions import enqueue_generated_intervention
 from app.services.incident_report import build_incident_report
-from app.services.agentic_runtime import latest_agent_cycle, run_agent_cycle, verify_recovery
+from app.services.agentic_runtime import agent_activity_feed, latest_agent_cycle, run_agent_cycle, verify_recovery
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -501,6 +501,7 @@ def get_state(db: Session = Depends(get_db)):
         "interventions": interventions,
         "unknowns": unknowns,
         "agent_runtime": agent_runtime,
+        "agent_activity": agent_activity_feed(db),
     }
 
 

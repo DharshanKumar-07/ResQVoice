@@ -31,7 +31,7 @@ from app.database import Base
 from app.models import Action, EventLog, Fact, Intervention as InterventionRow, Unknown
 from app.schemas import ActionStatus, HypothesisStatus, Participant
 from app.services.incident_report import build_incident_report
-from app.services.agentic_runtime import choose_tool, run_agent_cycle, run_mock_tool, verify_recovery
+from app.services.agentic_runtime import agent_activity_feed, choose_tool, run_agent_cycle, run_mock_tool, verify_recovery
 from app.services.intervention_policy import InterventionCandidate, InterventionPolicy
 from app.services.participant_registry import register_agent, register_participant, resolve_participant
 from app.services.transcript_ingestion import TranscriptIngestionGuard, TranscriptInput
@@ -204,6 +204,23 @@ def test_agent_recovery_requires_and_accepts_monitoring_evidence(db):
     verified = verify_recovery(db)
     assert verified["ready_to_resolve"] is True
     assert verified["status"] == "RECOVERY_VERIFIED"
+
+
+def test_agent_activity_feed_exposes_auditable_background_stages(db):
+    db.add(EventLog(event_type="TRANSCRIPT_CHUNK", payload={
+        "speaker": "Meera", "role": "SRE", "text": "Database connections are high.",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }))
+    db.commit()
+    run_agent_cycle(db, reason="judge_demo")
+
+    feed = agent_activity_feed(db)
+
+    phases = {item["phase"] for item in feed}
+    assert {"listen", "observe", "plan", "act", "verify", "decide"}.issubset(phases)
+    tool_event = next(item for item in feed if item["phase"] == "act")
+    assert "get_database_metrics" in tool_event["title"]
+    assert "connection pool utilization percent: 96" in tool_event["detail"]
 
 
 def test_ai_agent_has_separate_identity_and_is_rejected_by_human_pipeline(db):
