@@ -792,15 +792,36 @@ async def api_start_agora_agent(req: StartAgentRequest, db: Session = Depends(ge
                 ), db)
         register_agent(req.channel_name, req.agent_uid, db)
         response = await start_agent_session(req)
+        append_event(db, "AGORA_AGENT_SESSION_STARTED", {
+            "agent_id": response.agent_id,
+            "channel": req.channel_name,
+            "agent_uid": req.agent_uid,
+            "speaker_uid": req.speaker_uid or next(
+                (uid for uid in req.remote_rtc_uids if uid != "*"), ""
+            ),
+            "speaker_name": req.speaker_name,
+            "speaker_role": req.speaker_role,
+            "status": response.status,
+        })
+        db.commit()
         log_event("RTC_JOINED", channel=req.channel_name, agent_id=response.agent_id, agent_uid=req.agent_uid)
         return response
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 @app.post("/api/agora/agent/stop/{session_id}")
-async def api_stop_agora_agent(session_id: str):
+async def api_stop_agora_agent(session_id: str, db: Session = Depends(get_db)):
     try:
-        return await stop_agent_session(session_id)
+        session = ACTIVE_AGENT_SESSIONS.get(session_id, {})
+        result = await stop_agent_session(session_id)
+        append_event(db, "AGORA_AGENT_SESSION_STOPPED", {
+            "agent_id": session_id,
+            "channel": session.get("channel", "incident-room"),
+            "agent_uid": session.get("agent_uid", "1000"),
+            "status": result.get("status", "STOPPED"),
+        })
+        db.commit()
+        return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

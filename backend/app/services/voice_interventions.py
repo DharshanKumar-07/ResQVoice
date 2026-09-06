@@ -21,6 +21,7 @@ from app.models import (
     Claim,
     Conflict,
     Decision,
+    EventLog,
     Fact,
     Hypothesis,
     Intervention as InterventionRow,
@@ -55,8 +56,10 @@ def is_summary_request(text: str) -> bool:
     return any(pattern.search(text) for pattern in SUMMARY_PATTERNS)
 
 
-def active_agent_for_channel(channel: str) -> tuple[str, dict[str, str]] | None:
-    return next(
+def active_agent_for_channel(
+    channel: str, db: Session | None = None,
+) -> tuple[str, dict[str, str]] | None:
+    active = next(
         (
             (agent_id, session)
             for agent_id, session in reversed(ACTIVE_AGENT_SESSIONS.items())
@@ -64,6 +67,62 @@ def active_agent_for_channel(channel: str) -> tuple[str, dict[str, str]] | None:
         ),
         None,
     )
+    if active is not None or db is None:
+        return active
+
+    # Render can restart the FastAPI process while Agora's cloud agent remains
+    # alive. Rehydrate the process-local registry from the durable session event
+    # so queued speech does not dead-end after a deployment or cold start.
+    events = (
+        db.query(EventLog)
+        .filter(EventLog.event_type.in_([
+            "AGORA_AGENT_SESSION_STARTED", "AGORA_AGENT_SESSION_STOPPED",
+        ]))
+        .order_by(EventLog.id.desc())
+        .limit(100)
+        .all()
+    )
+    for event in events:
+        payload = event.payload or {}
+        if payload.get("channel") != channel:
+            continue
+        if event.event_type == "AGORA_AGENT_SESSION_STOPPED":
+            break
+        agent_id = str(payload.get("agent_id") or "")
+        if agent_id:
+            session = {
+                "channel": channel,
+                "agent_uid": str(payload.get("agent_uid") or "1000"),
+                "speaker_uid": str(payload.get("speaker_uid") or ""),
+                "speaker_name": str(payload.get("speaker_name") or ""),
+                "speaker_role": str(payload.get("speaker_role") or ""),
+            }
+            ACTIVE_AGENT_SESSIONS[agent_id] = session
+            log_event("AGORA_AGENT_SESSION_RECOVERED", agent_id=agent_id, channel=channel)
+            return agent_id, session
+
+    # Compatibility recovery for sessions created before durable session events
+    # were introduced. Only a still-live queued intervention is eligible.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    queued = (
+        db.query(InterventionRow)
+        .filter(InterventionRow.agent_id.isnot(None))
+        .filter(InterventionRow.status.in_(["PENDING", "DEFERRED"]))
+        .filter(InterventionRow.expires_at > now)
+        .order_by(InterventionRow.created_at.desc())
+        .first()
+    )
+    if queued and queued.agent_id:
+        session = {"channel": channel, "agent_uid": "1000"}
+        ACTIVE_AGENT_SESSIONS[queued.agent_id] = session
+        log_event(
+            "AGORA_AGENT_SESSION_RECOVERED",
+            agent_id=queued.agent_id,
+            channel=channel,
+            source="queued_intervention",
+        )
+        return queued.agent_id, session
+    return None
 
 
 def _configured_high_priority_triggers() -> set[str]:
@@ -246,7 +305,7 @@ async def enqueue_generated_intervention(
     if _recent_trigger_exists(trigger_type, db, related):
         log_event("INTERVENTION_DISMISSED", trigger=trigger_type, reason="pre_generation_cooldown")
         return None
-    agent = active_agent_for_channel(channel)
+    agent = active_agent_for_channel(channel, db)
     if agent is None:
         log_event("INTERVENTION_DEFERRED", trigger=trigger_type, reason="no_active_agent")
         return None

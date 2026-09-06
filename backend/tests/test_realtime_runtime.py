@@ -338,6 +338,46 @@ def test_high_priority_uses_native_interrupt_and_low_priority_appends():
         assert speak_priority_for("CONFLICT_DETECTED") == "APPEND"
 
 
+def test_active_agent_registry_recovers_from_persisted_session_after_restart(db):
+    from app.services.voice_interventions import active_agent_for_channel
+
+    db.add(EventLog(event_type="AGORA_AGENT_SESSION_STARTED", payload={
+        "agent_id": "agent-after-restart",
+        "channel": "incident-room",
+        "agent_uid": "1000",
+        "speaker_uid": "42",
+        "speaker_name": "Priya",
+        "speaker_role": "Incident Commander",
+    }))
+    db.commit()
+    ACTIVE_AGENT_SESSIONS.clear()
+
+    recovered = active_agent_for_channel("incident-room", db)
+
+    assert recovered is not None
+    agent_id, session = recovered
+    assert agent_id == "agent-after-restart"
+    assert session["speaker_uid"] == "42"
+    ACTIVE_AGENT_SESSIONS.clear()
+
+
+def test_active_agent_registry_does_not_recover_a_stopped_session(db):
+    from app.services.voice_interventions import active_agent_for_channel
+
+    db.add_all([
+        EventLog(event_type="AGORA_AGENT_SESSION_STARTED", payload={
+            "agent_id": "stopped-agent", "channel": "incident-room",
+        }),
+        EventLog(event_type="AGORA_AGENT_SESSION_STOPPED", payload={
+            "agent_id": "stopped-agent", "channel": "incident-room",
+        }),
+    ])
+    db.commit()
+    ACTIVE_AGENT_SESSIONS.clear()
+
+    assert active_agent_for_channel("incident-room", db) is None
+
+
 def test_speak_dispatch_emits_started_event_and_persists_ai_transcript(db):
     from app.services.incident_state_stream import INCIDENT_STATE_BROADCASTER
     from app.services.voice_interventions import speak_to_channel

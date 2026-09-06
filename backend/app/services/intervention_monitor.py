@@ -17,6 +17,7 @@ from app.services.observability import log_event
 from app.services.silence_signal import scan_for_unresolved
 from app.services.transcript_stream import TRANSCRIPT_BROADCASTER
 from app.services.voice_interventions import (
+    active_agent_for_channel,
     enqueue_generated_intervention,
     speak_priority_for,
     speak_to_channel,
@@ -78,11 +79,12 @@ class InterventionMonitor:
                 log_event("INTERVENTION_MONITOR_ERROR", error_type=type(exc).__name__, message=str(exc)[:300])
 
     async def scan_and_dispatch(self) -> None:
-        if not ACTIVE_AGENT_SESSIONS:
-            return
-        agent_id, session = next(iter(ACTIVE_AGENT_SESSIONS.items()))
         db = SessionLocal()
         try:
+            agent = active_agent_for_channel("incident-room", db)
+            if agent is None:
+                return
+            agent_id, session = agent
             now = datetime.now(timezone.utc)
             summary_interval = max(
                 30, int(os.getenv("INTERVENTION_PERIODIC_SUMMARY_SECONDS", "300"))
