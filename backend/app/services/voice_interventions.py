@@ -213,6 +213,21 @@ def _fallback_intervention_text(trigger_type: str, db: Session) -> str:
     return "I could not generate the requested intervention right now. Please try again shortly."
 
 
+def _agent_next_step_fallback(trigger_context: dict[str, Any]) -> str | None:
+    remediation = trigger_context.get("remediation") or {}
+    diagnosis = str(trigger_context.get("diagnosis") or "").strip()
+    next_step = str(trigger_context.get("next_question") or "").strip()
+    if remediation.get("status") == "SIMULATED_EXECUTED":
+        return _limit_tts_bytes(
+            f"I found the issue: {diagnosis} I restarted only the affected component and verified recovery. {next_step}"
+        )
+    tool = trigger_context.get("tool_call") or {}
+    if tool:
+        tool_name = str(tool.get("tool") or "monitoring").replace("_", " ")
+        return _limit_tts_bytes(f"I checked {tool_name} and updated the response plan. {next_step}")
+    return None
+
+
 async def generate_intervention_text(
     trigger_type: str,
     db: Session,
@@ -220,13 +235,14 @@ async def generate_intervention_text(
     trigger_context: dict[str, Any] | None = None,
 ) -> str:
     """Generate concise speech from a fresh snapshot of current Incident State."""
+    context = trigger_context or {}
     client = genai.Client(
         api_key=os.getenv("GEMINI_API_KEY"),
         http_options=NO_PROVIDER_RETRIES,
     )
     prompt = {
         "trigger": trigger_type,
-        "trigger_context": trigger_context or {},
+        "trigger_context": context,
         "incident_state": _state_payload(db),
     }
     model = os.getenv(
@@ -241,10 +257,11 @@ async def generate_intervention_text(
                 contents=json.dumps(prompt, default=str),
                 config={
                     "system_instruction": (
-                        "You are the ResQVoice Incident Co-pilot speaking in a live incident room. "
-                        "Using only the supplied Incident State and trigger context, write one concise, "
-                        "actionable spoken intervention. Do not use markdown, labels, or preamble. "
-                        "Do not invent facts. Keep it under 70 words."
+                        "You are ResQVoice, a capable teammate speaking naturally during a live incident call. "
+                        "Use short first-person sentences and conversational language. Say what you checked, "
+                        "what you found, and what you already did before asking for any human input. Only use "
+                        "the supplied state and context. No markdown, labels, formal preamble, or robotic wording. "
+                        "Keep it to two sentences and under 45 words."
                     ),
                     "temperature": 0.2,
                 },
@@ -257,7 +274,11 @@ async def generate_intervention_text(
         except Exception as exc:
             if not _is_transient_gemini_error(exc) or attempt == 2:
                 if _is_transient_gemini_error(exc):
-                    fallback = _fallback_intervention_text(trigger_type, db)
+                    fallback = (
+                        _agent_next_step_fallback(context)
+                        if trigger_type == "AGENT_NEXT_STEP"
+                        else None
+                    ) or _fallback_intervention_text(trigger_type, db)
                     log_event(
                         "INTERVENTION_TEXT_FALLBACK", trigger=trigger_type,
                         error_type=type(exc).__name__, message=str(exc)[:300], text=fallback,
@@ -275,9 +296,13 @@ async def generate_intervention_text(
 def _recent_trigger_exists(
     trigger_type: str, db: Session, related_claim_ids: list[str]
 ) -> bool:
-    cutoff = datetime.now(timezone.utc) - timedelta(
-        seconds=INTERVENTION_POLICY.cooldown_seconds
-    )
+    cooldown = INTERVENTION_POLICY.cooldown_seconds
+    if trigger_type == "AGENT_NEXT_STEP":
+        try:
+            cooldown = max(5, int(os.getenv("AGENT_CONVERSATION_COOLDOWN_SECONDS", "20")))
+        except ValueError:
+            cooldown = 20
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=cooldown)
     rows = (
         db.query(InterventionRow)
         .filter(InterventionRow.trigger_type == trigger_type)

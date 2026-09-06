@@ -184,6 +184,15 @@ def test_agentic_cycle_selects_tool_records_evidence_and_recommends_owner(db):
         "speaker": "Priya", "participant_type": "human",
         "text": "The database connection pool looks exhausted.",
     }))
+    db.add(Unknown(
+        id="unknown-db", description="Database saturation is unverified",
+        status="OPEN", source_id="claim-db",
+    ))
+    db.add(__import__("app.models", fromlist=["Conflict"]).Conflict(
+        id="conflict-db", topic="Database saturation", claim_a_id="a",
+        claim_b_id="b", status="UNRESOLVED",
+        recommended_verification="Check database metrics",
+    ))
     db.commit()
 
     cycle = run_agent_cycle(db, reason="test")
@@ -192,6 +201,9 @@ def test_agentic_cycle_selects_tool_records_evidence_and_recommends_owner(db):
     assert cycle["tool_call"]["tool"] == "get_database_metrics"
     assert cycle["recommended_owner"]["name"] == "Meera"
     assert "Meera" in cycle["next_question"]
+    assert cycle["plan"][2]["status"] == "DONE"
+    assert db.query(Unknown).filter_by(id="unknown-db").one().status == "RESOLVED"
+    assert db.query(Action).filter_by(id="action-db").one().owner == "Meera"
     assert db.query(Fact).filter(Fact.source == "Demo tool: get_database_metrics").count() == 1
     assert db.query(EventLog).filter(EventLog.event_type == "AGENT_CYCLE").count() == 1
     assert cycle["hypothesis_updates"][0]["new_confidence"] == pytest.approx(0.75)

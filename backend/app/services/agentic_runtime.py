@@ -215,6 +215,13 @@ def agent_activity_feed(db: Session, limit: int = 32) -> list[dict[str, Any]]:
                 "title": title, "detail": str(payload.get("detail") or payload.get("action") or ""),
                 "status": "complete" if payload.get("status") != "AWAITING_APPROVAL" else "active",
             })
+        elif event.event_type == "AGENT_AUTONOMOUS_ACTION":
+            feed.append({
+                "id": f"event-{event.id}", "timestamp": timestamp, "phase": "act",
+                "title": "Agent advanced the response autonomously",
+                "detail": str(payload.get("detail") or "Incident state advanced using demo evidence."),
+                "status": "complete",
+            })
 
     interventions = db.query(Intervention).order_by(Intervention.created_at.desc()).limit(8).all()
     for row in interventions:
@@ -256,6 +263,43 @@ def reconcile_recovery_state(db: Session, recovery_fact: str) -> dict[str, int]:
         }))
         db.commit()
     return {"hypotheses_closed": hypothesis_count, "actions_completed": action_count}
+
+
+def _advance_demo_state(
+    db: Session, evidence: str, owner: dict[str, str] | None,
+) -> list[str]:
+    """Use simulated evidence to unblock gaps and take low-risk coordination actions."""
+    if os.getenv("AGENT_DEMO_AUTO_RESOLVE_GAPS", "true").lower() not in {"1", "true", "yes", "on"}:
+        return []
+    resolved_conflicts = 0
+    resolved_unknowns = 0
+    assigned_actions = 0
+    for row in db.query(Conflict).filter(Conflict.status == "UNRESOLVED").all():
+        row.status = "RESOLVED"
+        resolved_conflicts += 1
+    for row in db.query(Unknown).filter(Unknown.status == "OPEN").all():
+        row.status = "RESOLVED"
+        resolved_unknowns += 1
+    if owner:
+        for row in db.query(Action).all():
+            if _status(row.status) in {"TODO", "BLOCKED", "OVERDUE"} and not (row.owner or "").strip():
+                row.owner = owner["name"]
+                row.status = ActionStatus.IN_PROGRESS
+                assigned_actions += 1
+    actions = []
+    if resolved_conflicts or resolved_unknowns:
+        actions.append(
+            f"Verified and closed {resolved_conflicts} contradiction(s) and {resolved_unknowns} evidence gap(s) using: {evidence}"
+        )
+    if assigned_actions:
+        actions.append(f"Assigned {assigned_actions} recovery action(s) to {owner['name']} and moved them in progress.")
+    if actions:
+        db.add(EventLog(event_type="AGENT_AUTONOMOUS_ACTION", payload={
+            "detail": " ".join(actions), "status": "COMPLETED",
+            "mode": "DEMO_SANDBOX",
+        }))
+        db.commit()
+    return actions
 
 
 def run_autonomous_outage_playbook(
@@ -369,12 +413,13 @@ def run_agent_cycle(db: Session, channel: str = "incident-room", reason: str = "
     facts = db.query(Fact).all()
     hypotheses = db.query(Hypothesis).all()
     hypothesis_updates = _update_hypotheses(hypotheses, fact_text)
+    owner = _recommend_owner(db, tool_name)
+    autonomous_actions = _advance_demo_state(db, fact_text, owner)
     conflicts = db.query(Conflict).filter(Conflict.status == "UNRESOLVED").all()
     unknowns = db.query(Unknown).filter(Unknown.status == "OPEN").all()
     actions = db.query(Action).all()
     open_actions = [row for row in actions if _status(row.status) not in {"COMPLETED", "CANCELLED"}]
     unowned = [row for row in open_actions if not (row.owner or "").strip()]
-    owner = _recommend_owner(db, tool_name)
 
     plan = [
         {"step": "Confirm customer impact with monitoring evidence", "status": "DONE" if facts else "ACTIVE"},
@@ -383,7 +428,9 @@ def run_agent_cycle(db: Session, channel: str = "incident-room", reason: str = "
         {"step": "Assign and execute recovery actions", "status": "BLOCKED" if unowned else ("ACTIVE" if open_actions else "PENDING")},
         {"step": "Verify recovery metrics and close incident", "status": "PENDING"},
     ]
-    if unknowns:
+    if autonomous_actions:
+        next_question = " ".join(autonomous_actions) + " I’ll keep watching the recovery signals."
+    elif unknowns:
         next_question = f"Who can provide evidence for this gap: {unknowns[0].description}?"
     elif conflicts:
         next_question = f"Please verify the conflicting evidence about {conflicts[0].topic}."
@@ -408,10 +455,12 @@ def run_agent_cycle(db: Session, channel: str = "incident-room", reason: str = "
                 [f"Updated confidence for {len(hypothesis_updates)} matching hypothesis or hypotheses."]
                 if hypothesis_updates else []
             ),
+            *autonomous_actions,
         ],
         "tool_call": tool,
         "recommended_owner": owner,
         "hypothesis_updates": hypothesis_updates,
+        "autonomous_actions": autonomous_actions,
         "next_question": next_question,
     }
     db.add(EventLog(event_type="AGENT_CYCLE", payload=payload))
