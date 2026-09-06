@@ -59,6 +59,14 @@
 .agent-operation-note { margin-top: 10px; color: var(--text-secondary); font-size: 12px; line-height: 18px; }
 .report-preview { margin-top: 14px; padding: 13px; background: var(--bg-card-inner); border: 1px solid var(--border-subtle); border-radius: 7px; }
 .report-preview pre { max-height: 360px; margin-top: 10px; padding: 12px; overflow: auto; color: var(--text-secondary); background: #fff; border: 1px solid var(--border-subtle); border-radius: 6px; font-family: var(--font-mono); font-size: 11px; line-height: 17px; white-space: pre-wrap; }
+.agent-runtime-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+.agent-runtime-card { min-width: 0; padding: 13px; background: var(--bg-card-inner); border: 1px solid var(--border-subtle); border-radius: 7px; }
+.agent-runtime-card > ul { margin: 9px 0 0 18px; color: var(--text-secondary); font-size: 12px; line-height: 19px; }
+.agent-plan { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.agent-plan-step { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 12px; }
+.tool-call-card { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 7px; margin-top: 11px; padding: 9px; background: #fff; border: 1px solid var(--border-subtle); border-radius: 6px; }
+.tool-call-card code { grid-column: 1 / -1; overflow-wrap: anywhere; color: var(--text-muted); font-size: 11px; }
+.agent-next-question { margin-top: 11px; color: var(--accent-primary); font-size: 12px; line-height: 18px; }
 
 .surface-panel, .glass-panel { background: var(--bg-panel); border: 1px solid var(--border-subtle); border-radius: 9px; box-shadow: var(--shadow-sm); }
 .mock-banner, .notice-banner { min-height: 42px; gap: 10px; padding: 9px 12px; border: 1px solid; border-radius: 7px; font-size: 13px; }
@@ -195,6 +203,7 @@
   .nav-status { grid-column: 2; grid-row: 1; }
   .col-span-4, .col-span-5, .col-span-6, .col-span-7, .col-span-8 { grid-column: span 12; }
   .safety-workspace { grid-template-columns: 1fr; }
+  .agent-runtime-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {

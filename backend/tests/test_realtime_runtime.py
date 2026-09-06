@@ -29,8 +29,9 @@ sa.ARRAY = lambda item_type, *args, **kwargs: ArrayAsJSON()  # type: ignore[assi
 
 from app.database import Base
 from app.models import Action, EventLog, Fact, Intervention as InterventionRow, Unknown
-from app.schemas import ActionStatus, Participant
+from app.schemas import ActionStatus, HypothesisStatus, Participant
 from app.services.incident_report import build_incident_report
+from app.services.agentic_runtime import choose_tool, run_agent_cycle, run_mock_tool, verify_recovery
 from app.services.intervention_policy import InterventionCandidate, InterventionPolicy
 from app.services.participant_registry import register_agent, register_participant, resolve_participant
 from app.services.transcript_ingestion import TranscriptIngestionGuard, TranscriptInput
@@ -155,6 +156,54 @@ def test_incident_report_is_evidence_bound_and_includes_open_work(db):
     assert "Failover health is unknown" in report["markdown"]
     assert "owner: UNASSIGNED" in report["markdown"]
     assert "Priya: Payment errors are elevated." in report["markdown"]
+
+
+def test_agentic_cycle_selects_tool_records_evidence_and_recommends_owner(db):
+    register_participant(Participant(
+        agora_uid="51", user_id="user-51", display_name="Meera",
+        role="Database Engineer", participant_type="human",
+    ), db)
+    db.add(Action(
+        id="action-db", task="Inspect database connections", owner="",
+        status=ActionStatus.TODO, priority="P1",
+    ))
+    db.add(__import__("app.models", fromlist=["Hypothesis"]).Hypothesis(
+        id="hypothesis-db", description="Database connection exhaustion is the root cause",
+        origin="Rahul", supporting_evidence=[], contradicting_evidence=[],
+        confidence=0.6, status=HypothesisStatus.UNCONFIRMED,
+    ))
+    db.add(EventLog(event_type="TRANSCRIPT_CHUNK", payload={
+        "speaker": "Priya", "participant_type": "human",
+        "text": "The database connection pool looks exhausted.",
+    }))
+    db.commit()
+
+    cycle = run_agent_cycle(db, reason="test")
+
+    assert choose_tool("database connections are high") == "get_database_metrics"
+    assert cycle["tool_call"]["tool"] == "get_database_metrics"
+    assert cycle["recommended_owner"]["name"] == "Meera"
+    assert "Meera" in cycle["next_question"]
+    assert db.query(Fact).filter(Fact.source == "Demo tool: get_database_metrics").count() == 1
+    assert db.query(EventLog).filter(EventLog.event_type == "AGENT_CYCLE").count() == 1
+    assert cycle["hypothesis_updates"][0]["new_confidence"] == pytest.approx(0.75)
+
+
+def test_agent_recovery_requires_and_accepts_monitoring_evidence(db):
+    blocked = verify_recovery(db)
+    assert blocked["ready_to_resolve"] is False
+
+    recovered_tool = run_mock_tool("get_error_rate", "Rollback complete; service recovered")
+    assert recovered_tool["result"]["error_rate_percent"] == 0.7
+    db.add(Fact(
+        id="recovery-fact", description="Payment error rate is 0.7% (baseline 1.0%).",
+        source="Demo tool: get_error_rate", speaker="ResQVoice Agent", status="VERIFIED",
+    ))
+    db.commit()
+
+    verified = verify_recovery(db)
+    assert verified["ready_to_resolve"] is True
+    assert verified["status"] == "RECOVERY_VERIFIED"
 
 
 def test_ai_agent_has_separate_identity_and_is_rejected_by_human_pipeline(db):

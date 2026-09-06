@@ -106,6 +106,9 @@ export default function AgoraRoom() {
     PERIODIC_SUMMARY: 'Providing a status summary',
     UNRESOLVED_REVIEW: 'Reviewing evidence gaps',
     ACTION_OWNERSHIP_REVIEW: 'Reviewing action ownership',
+    AGENT_NEXT_STEP: 'Driving the investigation plan',
+    RECOVERY_VERIFICATION: 'Verifying incident recovery',
+    ACTION_FOLLOW_UP: 'Following up on a time-sensitive action',
   };
 
   return (

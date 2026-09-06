@@ -125,6 +125,30 @@ class InterventionMonitor:
                     related_claim_ids=[action.id],
                 )
 
+            # Demo-speed ownership follow-ups make the agent visibly persistent.
+            # Production deployments can use longer deadlines without changing
+            # the decision logic.
+            due_cutoff = now + timedelta(seconds=120)
+            due_actions = [
+                action for action in db.query(Action).all()
+                if action.deadline is not None
+                and action.deadline.replace(tzinfo=timezone.utc) <= due_cutoff
+                and str(getattr(action.status, "value", action.status)).upper()
+                not in {"COMPLETED", "CANCELLED"}
+            ]
+            for action in due_actions:
+                deadline = action.deadline.replace(tzinfo=timezone.utc)
+                await enqueue_generated_intervention(
+                    "ACTION_FOLLOW_UP", "HIGH", db,
+                    channel=session.get("channel", "incident-room"),
+                    trigger_context={
+                        "action_id": action.id, "task": action.task,
+                        "owner": action.owner or "unassigned",
+                        "deadline": deadline.isoformat(), "overdue": deadline <= now,
+                    },
+                    related_claim_ids=[action.id],
+                )
+
             expired = (
                 db.query(InterventionRow)
                 .filter(InterventionRow.status.in_(["PENDING", "DEFERRED"]))

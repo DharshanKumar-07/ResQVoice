@@ -45,6 +45,7 @@ interface State {
   claims: Claim[];
   conflicts: Conflict[];
   unknowns: Unknown[];
+  agent_runtime: AgentRuntime | null;
   transcripts: TranscriptEvent[];
 }
 
@@ -52,6 +53,16 @@ interface IncidentReport {
   status: string;
   summary: string;
   markdown: string;
+}
+
+interface AgentRuntime {
+  timestamp: string;
+  objective: string;
+  plan: Array<{ step: string; status: string }>;
+  activity: string[];
+  tool_call: { tool: string; mode: string; result: Record<string, unknown> };
+  recommended_owner?: { name: string; role: string } | null;
+  next_question: string;
 }
 
 const EMPTY_STATE: State = {
@@ -62,6 +73,7 @@ const EMPTY_STATE: State = {
   claims: [],
   conflicts: [],
   unknowns: [],
+  agent_runtime: null,
   transcripts: [],
 };
 
@@ -258,6 +270,38 @@ export default function Dashboard() {
     }
   };
 
+  const runAutonomousCycle = async () => {
+    setAgentCommand('cycle');
+    try {
+      await axios.post(`${BACKEND_URL}/api/agent/cycle`, { reason: 'command_center_demo' });
+      setError(null);
+      await fetchState();
+    } catch (cycleError) {
+      console.error('Autonomous agent cycle failed:', cycleError);
+      setError('The autonomous agent cycle could not be completed.');
+    } finally {
+      setAgentCommand(null);
+    }
+  };
+
+  const verifyIncidentRecovery = async () => {
+    setAgentCommand('verify-recovery');
+    try {
+      const response = await axios.post<{ ready_to_resolve: boolean; message: string; blockers: string[] }>(
+        `${BACKEND_URL}/api/agent/verify-recovery`,
+      );
+      setError(response.data.ready_to_resolve
+        ? null
+        : `${response.data.message} ${response.data.blockers.join(' ')}`);
+      await fetchState();
+    } catch (verificationError) {
+      console.error('Recovery verification failed:', verificationError);
+      setError('The agent could not verify recovery.');
+    } finally {
+      setAgentCommand(null);
+    }
+  };
+
   const advanceDecision = async (decision: Decision, operation: 'approve' | 'execute' | 'verify') => {
     setBusyDecisionId(decision.id);
     try {
@@ -420,6 +464,9 @@ export default function Dashboard() {
         </div>
         <div className="agent-operation-body">
           <div className="agent-operation-actions">
+            <button className="btn btn-primary" disabled={agentCommand !== null} onClick={() => void runAutonomousCycle()}>
+              <RefreshCw size={14} aria-hidden="true" />Run autonomous cycle
+            </button>
             <button className="btn btn-primary" disabled={agentCommand !== null} onClick={() => void runAgentCommand('summary')}>
               <Radio size={14} aria-hidden="true" />Speak status summary
             </button>
@@ -431,6 +478,9 @@ export default function Dashboard() {
             </button>
             <button className="btn btn-secondary" disabled={agentCommand !== null} onClick={() => void generateIncidentReport()}>
               <FileText size={14} aria-hidden="true" />Generate handoff report
+            </button>
+            <button className="btn btn-secondary" disabled={agentCommand !== null} onClick={() => void verifyIncidentRecovery()}>
+              <ShieldCheck size={14} aria-hidden="true" />Verify recovery
             </button>
           </div>
           <p className="agent-operation-note">
@@ -444,6 +494,35 @@ export default function Dashboard() {
               </div>
               <p className="item-meta">{incidentReport.summary}</p>
               <pre>{incidentReport.markdown}</pre>
+            </div>
+          )}
+          {safeState.agent_runtime && (
+            <div className="agent-runtime-grid">
+              <div className="agent-runtime-card">
+                <div className="item-top"><strong>Current objective</strong><time className="item-meta mono">{formatTime(safeState.agent_runtime.timestamp)}</time></div>
+                <p className="item-text">{safeState.agent_runtime.objective}</p>
+                <div className="agent-plan">
+                  {safeState.agent_runtime.plan.map(item => (
+                    <div className="agent-plan-step" key={item.step}>
+                      <StatusBadge status={item.status} />
+                      <span>{item.step}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="agent-runtime-card">
+                <strong>Latest observable activity</strong>
+                <ul>{safeState.agent_runtime.activity.map(item => <li key={item}>{item}</li>)}</ul>
+                <div className="tool-call-card">
+                  <span className="status-badge status-corroborated">Read-only tool</span>
+                  <strong>{safeState.agent_runtime.tool_call.tool}</strong>
+                  <code>{JSON.stringify(safeState.agent_runtime.tool_call.result)}</code>
+                </div>
+                {safeState.agent_runtime.recommended_owner && (
+                  <p className="item-meta">Recommended owner: <strong>{safeState.agent_runtime.recommended_owner.name}</strong> · {safeState.agent_runtime.recommended_owner.role}</p>
+                )}
+                <p className="agent-next-question"><strong>Next question:</strong> {safeState.agent_runtime.next_question}</p>
+              </div>
             </div>
           )}
         </div>

@@ -75,6 +75,7 @@ from app.services.intervention_policy import (
 )
 from app.services.voice_interventions import enqueue_generated_intervention
 from app.services.incident_report import build_incident_report
+from app.services.agentic_runtime import latest_agent_cycle, run_agent_cycle, verify_recovery
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -206,6 +207,10 @@ class AgentCommandRequest(BaseModel):
     command: Literal["summary", "review_gaps", "review_actions"]
 
 
+class AgentCycleRequest(BaseModel):
+    reason: str = Field(default="manual", min_length=1, max_length=80)
+
+
 def _transcript_payload(event: EventLog, speaker: str, role: str, text: str, timestamp: str):
     return {
         "id": event.id,
@@ -291,6 +296,16 @@ async def _extract_transcript_batch_background(
                     "conflicts": list(dict.fromkeys(conflict_ids)),
                 },
             })
+            cycle = run_agent_cycle(db, reason="transcript_batch")
+            await enqueue_generated_intervention(
+                "AGENT_NEXT_STEP", "MEDIUM", db,
+                trigger_context={
+                    "objective": cycle["objective"],
+                    "tool_call": cycle["tool_call"],
+                    "next_question": cycle["next_question"],
+                },
+                bypass_severity_threshold=True,
+            )
     except Exception as exc:
         if "db" in locals():
             db.rollback()
@@ -473,6 +488,7 @@ def get_state(db: Session = Depends(get_db)):
     participants = db.query(Participant).all()
     interventions = db.query(Intervention).all()
     unknowns = db.query(Unknown).all()
+    agent_runtime = latest_agent_cycle(db)
     
     return {
         "facts": facts,
@@ -484,6 +500,7 @@ def get_state(db: Session = Depends(get_db)):
         "participants": participants,
         "interventions": interventions,
         "unknowns": unknowns,
+        "agent_runtime": agent_runtime,
     }
 
 
@@ -519,6 +536,36 @@ def agent_report(incident_id: str = "INC-001", db: Session = Depends(get_db)):
     # The report is deterministic and evidence-bound; it never invents missing facts.
     scan_for_unresolved(incident_id, db)
     return build_incident_report(db, incident_id)
+
+
+@app.post("/api/agent/cycle")
+async def run_agent_cycle_endpoint(request: AgentCycleRequest, db: Session = Depends(get_db)):
+    cycle = run_agent_cycle(db, reason=request.reason)
+    created = await enqueue_generated_intervention(
+        "AGENT_NEXT_STEP", "MEDIUM", db,
+        trigger_context={
+            "objective": cycle["objective"],
+            "tool_call": cycle["tool_call"],
+            "next_question": cycle["next_question"],
+        },
+        bypass_severity_threshold=True,
+    )
+    if created is not None:
+        await INTERVENTION_MONITOR.scan_and_dispatch()
+    return {"cycle": cycle, "voice_intervention": created}
+
+
+@app.post("/api/agent/verify-recovery")
+async def verify_recovery_endpoint(db: Session = Depends(get_db)):
+    result = verify_recovery(db)
+    created = await enqueue_generated_intervention(
+        "RECOVERY_VERIFICATION", "HIGH" if not result["ready_to_resolve"] else "MEDIUM", db,
+        trigger_context=result,
+        bypass_severity_threshold=True,
+    )
+    if created is not None:
+        await INTERVENTION_MONITOR.scan_and_dispatch()
+    return {**result, "voice_intervention": created}
 
 @app.post("/api/evidence")
 def ingest_evidence_endpoint(evidence: EvidenceInput, db: Session = Depends(get_db)):
