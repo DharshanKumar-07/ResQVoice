@@ -125,7 +125,8 @@ nav { display: flex; justify-content: center; }
 .guided-replay-progress button.is-complete { color: var(--status-confirmed); border-color: rgba(16,185,129,.2); }
 .guided-replay-progress button.is-complete::before { background: var(--status-confirmed); }
 .guided-replay-progress button.is-active { color: #fff; background: rgba(34,211,197,.1); border-color: rgba(34,211,197,.38); box-shadow: 0 0 20px rgba(34,211,197,.1) inset; }
-.guided-replay-progress button.is-active::before { background: var(--accent-primary); box-shadow: 0 0 8px var(--accent-primary); animation: replay-progress 4.8s linear both; }
+.guided-replay-progress button.is-active::before { background: var(--accent-primary); box-shadow: 0 0 8px var(--accent-primary); animation: replay-progress 7.5s linear both; }
+.guided-replay-voice-status { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; color: #c9fff9; background: rgba(34,211,197,.1); border: 1px solid rgba(34,211,197,.2); border-radius: 999px; }
 .guided-replay-progress button > span { width: 23px; height: 23px; flex: 0 0 auto; display: grid; place-items: center; color: currentColor; background: rgba(255,255,255,.05); border-radius: 50%; font-family: var(--font-mono); font-size: 10px; font-weight: 700; }
 .guided-replay-progress small { overflow: hidden; font-size: 10px; font-weight: 650; line-height: 14px; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes replay-progress { from { right: calc(100% - 7px); } to { right: 7px; } }

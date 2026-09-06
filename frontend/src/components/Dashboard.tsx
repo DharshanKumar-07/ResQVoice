@@ -29,6 +29,8 @@ import {
   Sparkles,
   TestTube2,
   UserRound,
+  Volume2,
+  VolumeX,
   Wrench,
   XCircle,
 } from 'lucide-react';
@@ -154,6 +156,8 @@ export default function Dashboard() {
   const [demoReplayActive, setDemoReplayActive] = useState(false);
   const [demoReplayPlaying, setDemoReplayPlaying] = useState(false);
   const [demoReplayStep, setDemoReplayStep] = useState(0);
+  const [demoReplayVoiceEnabled, setDemoReplayVoiceEnabled] = useState(true);
+  const [demoReplayRun, setDemoReplayRun] = useState(0);
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [proposedAction, setProposedAction] = useState('Restart only pricing-servlet v2.18.4 and drain orphaned database sessions');
@@ -181,6 +185,7 @@ export default function Dashboard() {
     setDemoReplayActive(true);
     setDemoReplayStep(0);
     setDemoReplayPlaying(true);
+    setDemoReplayRun(run => run + 1);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -190,7 +195,15 @@ export default function Dashboard() {
     if (!enabled) {
       setDemoReplayActive(false);
       setDemoReplayPlaying(false);
+      window.speechSynthesis?.cancel();
     }
+  };
+
+  const toggleReplayVoice = () => {
+    setDemoReplayVoiceEnabled(enabled => {
+      if (enabled) window.speechSynthesis?.cancel();
+      return !enabled;
+    });
   };
 
   const fetchState = async () => {
@@ -258,9 +271,31 @@ export default function Dashboard() {
     if (!demoReplayActive || !demoReplayPlaying || demoReplayStep >= MOCK_REPLAY_STAGES.length - 1) return;
     const timer = window.setTimeout(() => {
       setDemoReplayStep(step => Math.min(step + 1, MOCK_REPLAY_STAGES.length - 1));
-    }, 4_800);
+    }, 7_500);
     return () => window.clearTimeout(timer);
   }, [demoReplayActive, demoReplayPlaying, demoReplayStep]);
+
+  useEffect(() => {
+    if (!demoReplayActive || !demoReplayPlaying || !demoReplayVoiceEnabled || !('speechSynthesis' in window)) return;
+
+    const synth = window.speechSynthesis;
+    const utterance = new SpeechSynthesisUtterance(MOCK_REPLAY_STAGES[demoReplayStep].speech);
+    const voices = synth.getVoices();
+    utterance.voice = voices.find(voice =>
+      /^en/i.test(voice.lang) && /Aria|Jenny|Samantha|Zira|Female|Google UK English Female/i.test(voice.name),
+    ) ?? voices.find(voice => /^en/i.test(voice.lang)) ?? null;
+    utterance.lang = 'en-US';
+    utterance.rate = 1.04;
+    utterance.pitch = 1.02;
+    utterance.volume = 1;
+
+    synth.cancel();
+    const startTimer = window.setTimeout(() => synth.speak(utterance), 220);
+    return () => {
+      window.clearTimeout(startTimer);
+      synth.cancel();
+    };
+  }, [demoReplayActive, demoReplayPlaying, demoReplayRun, demoReplayStep, demoReplayVoiceEnabled]);
 
   const handleResetWorkspace = async () => {
     const confirmed = window.confirm(
@@ -513,12 +548,17 @@ export default function Dashboard() {
             <div className="guided-replay-kicker">
               <span className="guided-replay-live"><span /> GUIDED REPLAY</span>
               <span>Chapter {demoReplayStep + 1} of {MOCK_REPLAY_STAGES.length}</span>
+              {demoReplayVoiceEnabled && <span className="guided-replay-voice-status"><Volume2 size={11} /> Agent voice live</span>}
             </div>
             <h2>{replayStage.title}</h2>
             <p>{replayStage.narration}</p>
             <div className="guided-replay-cue"><Sparkles size={14} aria-hidden="true" /><span>{replayStage.cue}</span></div>
           </div>
           <div className="guided-replay-controls">
+            <button className="btn btn-secondary" onClick={toggleReplayVoice} aria-pressed={demoReplayVoiceEnabled}>
+              {demoReplayVoiceEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+              Voice {demoReplayVoiceEnabled ? 'on' : 'off'}
+            </button>
             <button
               className="btn btn-primary"
               onClick={() => setDemoReplayPlaying(playing => !playing)}
@@ -541,7 +581,10 @@ export default function Dashboard() {
               <button
                 key={stage.label}
                 className={index < demoReplayStep ? 'is-complete' : index === demoReplayStep ? 'is-active' : ''}
-                onClick={() => setDemoReplayStep(index)}
+                onClick={() => {
+                  setDemoReplayStep(index);
+                  setDemoReplayRun(run => run + 1);
+                }}
                 title={`Go to ${stage.label}`}
               >
                 <span>{index < demoReplayStep ? <CheckCircle2 size={13} /> : index + 1}</span>

@@ -103,36 +103,42 @@ export const MOCK_REPLAY_STAGES = [
     title: 'A P1 checkout outage enters the room',
     narration: 'ResQVoice recognizes the severity, customer impact, and affected transaction path directly from the call.',
     cue: 'Start here: responders only describe what they can observe.',
+    speech: "Team, I detected a P1 checkout outage affecting every region. I'm establishing the impacted transaction path now.",
   },
   {
     label: 'Evidence conflict',
     title: 'The evidence does not agree yet',
     narration: 'The platform is failing, but core payment health checks are green. The agent turns that contradiction into two explicit investigation questions.',
     cue: 'Point out that uncertainty is recorded instead of silently ignored.',
+    speech: "I found conflicting evidence. Checkout is down, but core payment workers are healthy. I'm isolating the failing component.",
   },
   {
     label: 'Agent intervention',
     title: 'The agent joins the conversation',
     narration: 'After a natural pause, ResQVoice explains the component-level mismatch and announces the check it is performing next.',
     cue: 'Highlight that no responder clicked a button or issued a command.',
+    speech: "The pricing servlet is failing its database health check. I'm inspecting its logs and latest deployment now.",
   },
   {
     label: 'Root cause isolated',
     title: 'Health, logs, and deployments converge',
     narration: 'Autonomous tool calls connect database pool timeouts to pricing-servlet v2.18.4 and clear the evidence gaps.',
     cue: 'Show the confidence change from 62% to 94%.',
+    speech: 'I traced the failure to pricing servlet version two point eighteen point four and resolved the evidence gaps.',
   },
   {
     label: 'Targeted action',
     title: 'The smallest safe remediation executes',
     narration: 'The agent restarts only the unhealthy pricing servlet in the demo sandbox and preserves the healthy payment workers.',
     cue: 'Emphasize that a risky whole-platform restart was avoided.',
+    speech: "I'm restarting only the affected pricing servlet in the demo sandbox, leaving the healthy payment workers untouched.",
   },
   {
     label: 'Recovery verified',
     title: 'Evidence closes the loop',
     narration: 'Error rate falls to 0.4%, synthetic checkout passes, owners are assigned, and the agent gives the room a concise recovery update.',
     cue: 'Finish on 5/5 plan steps, zero unresolved signals, and the audit trail.',
+    speech: 'Recovery is verified. Errors are down to zero point four percent, and I assigned the remaining follow-up work.',
   },
 ] as const;
 
