@@ -64,7 +64,7 @@ services:
       # Comma-separated browser origins. Add the hosted frontend URL here when
       # it exists; local Vite origins are included for development.
       - key: CORS_ALLOW_ORIGINS
-        value: http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:5174,http://localhost:3000
+        value: http://localhost:5173,http://127.0.0.1:5173,http://127.0.0.1:5174,http://localhost:3000,https://resqvoice.vercel.app
 
       # Non-secret operational configuration.
       - key: GROQ_TRANSCRIPTION_MODEL

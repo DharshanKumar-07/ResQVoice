@@ -156,6 +156,7 @@ if _cors_origins != ["*"]:
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
+        "https://resqvoice.vercel.app",
     ):
         if _local_vite_origin not in _cors_origins:
             _cors_origins.append(_local_vite_origin)
