@@ -1,6 +1,35 @@
 # ResQVoice
 
-A monorepo for the ResQVoice project containing:
+ResQVoice is a real-time AI incident co-pilot. It joins an Agora RTC channel,
+turns responder speech into structured incident state, detects contradictions
+and unresolved critical signals, checks proposed actions against SOPs, and can
+speak evidence-grounded interventions back into the channel.
+
+## What it can do
+
+- Stream live human audio through Agora Conversational AI for VAD, turn
+  detection, ASR, TTS, interruption, and RTC audio I/O.
+- Preserve participant name, role, timestamp, UID, and transcript provenance.
+- Batch irregular transcript turns before Gemini extraction to reduce API calls.
+- Extract and maintain Facts, Hypotheses, Claims, Actions, Decisions, Unknowns,
+  conflicts, and evidence relationships in PostgreSQL.
+- Re-check claim lifecycle, contradictions, the evidence graph, and
+  Silence-as-Signal alerts whenever new evidence arrives.
+- Retrieve numbered incident runbooks and flag missing or out-of-order SOP steps.
+- Require an explicit human approval record before protected actions can execute,
+  followed by evidence-based verification before a Decision is completed.
+- Generate live spoken interventions for conflicts, unresolved critical claims,
+  approved decisions, explicit summary requests, and periodic summaries.
+- Display live transcripts, incident health, agent activity, approvals, evidence,
+  actions, decisions, and a non-overlapping scrollable Incident Timeline.
+- Support mock data, workspace reset, provider request counters, and a deterministic
+  demo agent cycle with read-only/mock operational tools.
+
+The demo execution adapter is intentionally mocked: it does not modify real
+production infrastructure.
+
+## Repository layout
+
 - `/frontend`: React + Vite (TypeScript)
 - `/backend`: FastAPI (Python)
 - `/shared`: Shared schema definitions (Pydantic models and TypeScript interfaces)
@@ -22,6 +51,10 @@ Start the PostgreSQL and Redis containers using Docker Compose. On the very firs
 docker-compose up -d
 ```
 
+The Docker Compose PostgreSQL service uses host port `5432` by default. If that
+port is occupied, start it with `POSTGRES_HOST_PORT=5433 docker-compose up -d`
+and update the port in `backend/.env` to match.
+
 ### 2. Backend (FastAPI)
 
 ```bash
@@ -29,18 +62,15 @@ cd backend
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-export AGORA_APP_ID="your-agora-app-id"
-export AGORA_APP_CERTIFICATE="your-agora-app-certificate"
-export GEMINI_API_KEY="your-gemini-api-key"
-export AGORA_CUSTOMER_ID="your-rest-customer-id"
-export AGORA_CUSTOMER_SECRET="your-rest-customer-secret"
-export AGORA_PUBLIC_BASE_URL="https://your-public-fastapi-host"
-export AGORA_WEBHOOK_SECRET="a-long-random-bearer-secret"
-uvicorn app.main:app --reload
+cp .env.example .env
+alembic upgrade head
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Agora credentials remain server-side. The frontend obtains a one-hour RTC token
-from `POST /api/agora/token`; it does not need the App Certificate.
+Populate `backend/.env` with the required provider credentials and use the local
+database URL shown in `.env.example`. Agora credentials remain server-side. The
+frontend obtains a one-hour RTC token from `POST /api/agora/token`; it does not
+need the App Certificate.
 
 Copy `backend/.env.example` and `frontend/.env.example` when configuring local
 development. The browser publishes its microphone directly to the Agora RTC
@@ -64,12 +94,21 @@ older clients, but the incident-room hook no longer calls it.
 
 ## Render deployment
 
-[`render.yaml`](/Users/dharshankumar/.gemini/antigravity-ide/scratch/ResQVoice/render.yaml)
+[`render.yaml`](render.yaml)
 defines the FastAPI web service and a managed Render Postgres database. It runs
 `alembic upgrade head` before Uvicorn (compatible with Render's free plan),
 binds Uvicorn to Render's `$PORT`,
 exposes `/health`, and sets `AGORA_PUBLIC_BASE_URL` from Render's stable
 `RENDER_EXTERNAL_HOSTNAME`. No tunnel URL is committed or required.
+
+The currently configured public backend is:
+
+```text
+https://resqvoice-api-p1cj.onrender.com
+```
+
+Its deployment/readiness probe is `GET /health`. The frontend derives HTTP,
+SSE, and WebSocket endpoints from `VITE_BACKEND_URL`.
 
 During the initial Blueprint import, Render prompts for these values:
 
@@ -105,10 +144,37 @@ database readiness for deployment platforms.
 ```bash
 cd frontend
 npm install
+cp .env.example .env
 npm run dev
 ```
 
+Open `http://127.0.0.1:5173`. Set `VITE_BACKEND_URL` in `frontend/.env` to
+either the local FastAPI origin or the deployed Render origin before starting
+Vite.
+
+## Security and environment variables
+
+- Never commit `backend/.env` or `frontend/.env`; both are ignored by Git.
+- Keep `GEMINI_API_KEY`, `GROQ_API_KEY`, `AGORA_APP_CERTIFICATE`,
+  `AGORA_CUSTOMER_SECRET`, `AGORA_WEBHOOK_SECRET`, and `DATABASE_URL` on the
+  backend only.
+- Every `VITE_*` variable is public browser configuration. Do not place secrets
+  in a `VITE_*` variable.
+- Use Render secret environment variables for hosted credentials and rotate any
+  credential that has been pasted into chat, logs, screenshots, or source code.
+- Restrict local secret-file permissions with
+  `chmod 600 backend/.env frontend/.env`.
+- The current deployment is development/demo oriented. Before handling real
+  incident data, add application authentication, role-based authorization for
+  approvals and agent controls, authenticated SSE/WebSockets, and API rate limits.
+
+See [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md) for the implementation and
+verification audit.
+
 ## Shared Schemas
 
-- **Python**: Available at `/shared/python/schemas.py`. You can configure your backend to import these or copy them into the `app` directory.
-- **TypeScript**: Available at `/shared/typescript/types.ts`. You can import these in your React components.
+- **Python:** `shared/python/schemas.py`
+- **TypeScript:** `shared/typescript/types.ts`
+
+These canonical definitions are used to keep the backend services, database
+models, and frontend representations aligned.
