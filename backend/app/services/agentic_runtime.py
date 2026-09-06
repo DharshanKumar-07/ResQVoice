@@ -5,6 +5,7 @@ evidence, recommendations, and verification outcomes as auditable events.
 """
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -22,7 +23,13 @@ TOOL_ROLE = {
     "get_recent_deployments": ("devops", "sre", "backend"),
     "get_database_metrics": ("database", "backend", "devops"),
     "check_feature_flags": ("product", "backend", "devops"),
+    "inspect_service_logs": ("backend", "sre", "devops"),
 }
+
+OUTAGE_SIGNALS = (
+    "prod is down", "production is down", "service is down", "site is down",
+    "outage", "503", "cannot checkout", "can't checkout", "payments are failing",
+)
 
 
 def _status(value: Any) -> str:
@@ -57,6 +64,11 @@ def choose_tool(text: str) -> str:
     return "check_service_health"
 
 
+def is_outage_trigger(text: str) -> bool:
+    normalized = " ".join(text.lower().split())
+    return any(signal in normalized for signal in OUTAGE_SIGNALS)
+
+
 def run_mock_tool(tool_name: str, context: str = "") -> dict[str, Any]:
     recovering = any(word in context.lower() for word in ("recovered", "recovery", "fixed", "resolved", "rollback complete"))
     results: dict[str, dict[str, Any]] = {
@@ -78,6 +90,10 @@ def run_mock_tool(tool_name: str, context: str = "") -> dict[str, Any]:
         "check_feature_flags": {
             "flag": "new-pricing-rollout", "enabled": True, "exposure_percent": 100,
         },
+        "inspect_service_logs": {
+            "service": "pricing-servlet", "level": "ERROR", "matches": 1842,
+            "signature": "Database connection pool timeout", "window_minutes": 5,
+        },
     }
     if tool_name not in results:
         raise ValueError(f"Unsupported read-only tool: {tool_name}")
@@ -94,6 +110,8 @@ def _tool_fact(tool: dict[str, Any]) -> str:
         return f"Deployment {result['deployment']} became active {result['minutes_ago']} minutes ago."
     if name == "check_feature_flags":
         return f"Feature flag {result['flag']} is enabled for {result['exposure_percent']}% of traffic."
+    if name == "inspect_service_logs":
+        return f"Logs show {result['matches']} {result['level']} events from {result['service']}: {result['signature']}."
     return f"Payment service health is {result['status']} with HTTP {result['http_status']}."
 
 
@@ -184,6 +202,18 @@ def agent_activity_feed(db: Session, limit: int = 32) -> list[dict[str, Any]]:
                 "id": f"event-{event.id}", "timestamp": timestamp, "phase": phase,
                 "title": title, "detail": str(payload.get("text") or "")[:240], "status": "complete",
             })
+        elif event.event_type in {"REMEDIATION_SELECTED", "REMEDIATION_EXECUTED", "RECOVERY_CHECK"}:
+            labels = {
+                "REMEDIATION_SELECTED": ("remediate", "Selected the smallest safe remediation"),
+                "REMEDIATION_EXECUTED": ("remediate", "Executed sandbox remediation"),
+                "RECOVERY_CHECK": ("verify", "Ran post-remediation health checks"),
+            }
+            phase, title = labels[event.event_type]
+            feed.append({
+                "id": f"event-{event.id}", "timestamp": timestamp, "phase": phase,
+                "title": title, "detail": str(payload.get("detail") or payload.get("action") or ""),
+                "status": "complete" if payload.get("status") != "AWAITING_APPROVAL" else "active",
+            })
 
     interventions = db.query(Intervention).order_by(Intervention.created_at.desc()).limit(8).all()
     for row in interventions:
@@ -194,6 +224,99 @@ def agent_activity_feed(db: Session, limit: int = 32) -> list[dict[str, Any]]:
             "detail": row.message, "status": "active" if row.status in {"PENDING", "DEFERRED"} else "complete",
         })
     return sorted(feed, key=lambda item: item["timestamp"], reverse=True)[:limit]
+
+
+def run_autonomous_outage_playbook(
+    db: Session, text: str, trigger_event_id: int, channel: str = "incident-room",
+) -> dict[str, Any]:
+    """Investigate an outage and safely simulate the chosen remediation for the demo."""
+    existing = (
+        db.query(EventLog)
+        .filter(EventLog.event_type == "AGENT_CYCLE")
+        .order_by(EventLog.id.desc())
+        .limit(30)
+        .all()
+    )
+    for row in existing:
+        if (row.payload or {}).get("trigger_event_id") == trigger_event_id:
+            return dict(row.payload or {})
+
+    checks = [
+        run_mock_tool("check_service_health", text),
+        run_mock_tool("get_error_rate", text),
+        run_mock_tool("inspect_service_logs", text),
+        run_mock_tool("get_recent_deployments", text),
+    ]
+    evidence = [_tool_fact(tool) for tool in checks]
+    for tool, description in zip(checks, evidence):
+        if db.query(Fact).filter(Fact.description == description).first() is None:
+            db.add(Fact(
+                id=str(uuid.uuid4()), description=description,
+                source=f"Demo tool: {tool['tool']}", speaker="ResQVoice Agent",
+                timestamp=datetime.now(timezone.utc), status="VERIFIED",
+            ))
+
+    diagnosis = "The pricing servlet is exhausting the database connection pool after pricing-service-v42; the failure is isolated, so a full-platform restart is unnecessary."
+    remediation = "Restart only the pricing servlet and drain its stale database connections"
+    auto_execute = os.getenv("AGENT_DEMO_AUTOREMEDIATE", "true").lower() in {"1", "true", "yes", "on"}
+    remediation_status = "SIMULATED_EXECUTED" if auto_execute else "AWAITING_APPROVAL"
+    db.add(EventLog(event_type="REMEDIATION_SELECTED", payload={
+        "trigger_event_id": trigger_event_id, "action": remediation,
+        "detail": f"{remediation}. Whole-system restart rejected as unnecessarily broad.",
+        "status": remediation_status,
+    }))
+    if auto_execute:
+        db.add(EventLog(event_type="REMEDIATION_EXECUTED", payload={
+            "trigger_event_id": trigger_event_id, "action": remediation,
+            "detail": "Sandbox connector restarted pricing-servlet; no real production infrastructure was changed.",
+            "mode": "DEMO_SANDBOX", "status": "COMPLETED",
+        }))
+        recovery = run_mock_tool("get_error_rate", "service recovered after restart")
+        recovery_fact = _tool_fact(recovery)
+        if db.query(Fact).filter(Fact.description == recovery_fact).first() is None:
+            db.add(Fact(
+                id=str(uuid.uuid4()), description=recovery_fact,
+                source="Demo tool: get_error_rate", speaker="ResQVoice Agent",
+                timestamp=datetime.now(timezone.utc), status="VERIFIED",
+            ))
+        db.add(EventLog(event_type="RECOVERY_CHECK", payload={
+            "trigger_event_id": trigger_event_id,
+            "detail": f"{recovery_fact} Customer-impact metric returned to baseline.",
+            "status": "RECOVERY_VERIFIED",
+        }))
+    else:
+        recovery = None
+
+    owner = _recommend_owner(db, "inspect_service_logs")
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(), "channel": channel,
+        "reason": "automatic_outage_trigger", "trigger_event_id": trigger_event_id,
+        "trigger": text,
+        "objective": "Verify the reported production outage, isolate the fault, restore service safely, and prove recovery.",
+        "plan": [
+            {"step": "Verify the reported outage against live health metrics", "status": "DONE"},
+            {"step": "Inspect errors, logs, and recent changes", "status": "DONE"},
+            {"step": "Isolate the smallest failing component", "status": "DONE"},
+            {"step": "Apply the least-disruptive remediation", "status": "DONE" if auto_execute else "BLOCKED"},
+            {"step": "Re-check recovery metrics", "status": "DONE" if auto_execute else "PENDING"},
+        ],
+        "activity": [
+            f"Detected outage signal in {text}",
+            f"Ran {len(checks)} independent diagnostic checks.",
+            f"Root cause isolated: {diagnosis}",
+            f"Remediation {remediation_status.lower().replace('_', ' ')}: {remediation}",
+        ],
+        "tool_call": checks[-1], "tool_calls": checks,
+        "diagnosis": diagnosis,
+        "remediation": {"action": remediation, "status": remediation_status, "mode": "DEMO_SANDBOX"},
+        "recommended_owner": owner, "hypothesis_updates": [],
+        "next_question": "Recovery is verified. Please confirm checkout success from a customer path." if auto_execute else f"Approve this targeted remediation: {remediation}?",
+    }
+    db.add(EventLog(event_type="AGENT_CYCLE", payload=payload))
+    db.commit()
+    log_event("AUTONOMOUS_OUTAGE_PLAYBOOK_COMPLETED", trigger_event_id=trigger_event_id,
+              remediation_status=remediation_status)
+    return payload
 
 
 def run_agent_cycle(db: Session, channel: str = "incident-room", reason: str = "manual") -> dict[str, Any]:

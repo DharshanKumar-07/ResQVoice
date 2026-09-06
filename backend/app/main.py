@@ -75,7 +75,14 @@ from app.services.intervention_policy import (
 )
 from app.services.voice_interventions import enqueue_generated_intervention
 from app.services.incident_report import build_incident_report
-from app.services.agentic_runtime import agent_activity_feed, latest_agent_cycle, run_agent_cycle, verify_recovery
+from app.services.agentic_runtime import (
+    agent_activity_feed,
+    is_outage_trigger,
+    latest_agent_cycle,
+    run_agent_cycle,
+    run_autonomous_outage_playbook,
+    verify_recovery,
+)
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -369,6 +376,44 @@ def _schedule_extraction(
     task.add_done_callback(BACKGROUND_EXTRACTION_TASKS.discard)
 
 
+async def _run_outage_probe_background(
+    event_id: int, text: str, generation: int, channel: str = "incident-room",
+):
+    db = SessionLocal()
+    try:
+        async with WORKSPACE_COMMIT_LOCK:
+            if generation != WORKSPACE_GENERATION:
+                return
+            cycle = run_autonomous_outage_playbook(db, text, event_id, channel)
+            await enqueue_generated_intervention(
+                "AGENT_NEXT_STEP", "HIGH", db,
+                trigger_context={
+                    "objective": cycle["objective"],
+                    "diagnosis": cycle["diagnosis"],
+                    "remediation": cycle["remediation"],
+                    "next_question": cycle["next_question"],
+                },
+                bypass_severity_threshold=True,
+            )
+    except Exception as exc:
+        db.rollback()
+        log_event("AUTONOMOUS_OUTAGE_PLAYBOOK_FAILED", error_type=type(exc).__name__, message=str(exc)[:300])
+    finally:
+        db.close()
+    if generation == WORKSPACE_GENERATION:
+        await INTERVENTION_MONITOR.scan_and_dispatch()
+
+
+def _schedule_outage_probe(event_id: int, text: str, channel: str = "incident-room") -> None:
+    if not is_outage_trigger(text):
+        return
+    task = asyncio.create_task(
+        _run_outage_probe_background(event_id, text, WORKSPACE_GENERATION, channel)
+    )
+    BACKGROUND_EXTRACTION_TASKS.add(task)
+    task.add_done_callback(BACKGROUND_EXTRACTION_TASKS.discard)
+
+
 @app.post("/api/transcript")
 async def receive_transcript(
     chunk: TranscriptChunkRequest,
@@ -388,6 +433,7 @@ async def receive_transcript(
         chunk.timestamp,
         chunk.duration_seconds,
     )
+    _schedule_outage_probe(event.id, chunk.text)
     return {"status": "accepted", "event_id": event.id}
 
 
@@ -826,6 +872,7 @@ async def transcribe_audio(
             timestamp,
             duration_seconds,
         )
+        _schedule_outage_probe(event.id, transcript_text)
 
         return {
             "transcript": transcript_text,

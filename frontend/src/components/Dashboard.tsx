@@ -67,6 +67,9 @@ interface AgentRuntime {
   plan: Array<{ step: string; status: string }>;
   activity: string[];
   tool_call: { tool: string; mode: string; result: Record<string, unknown> };
+  tool_calls?: Array<{ tool: string; mode: string; result: Record<string, unknown> }>;
+  diagnosis?: string;
+  remediation?: { action: string; status: string; mode: string };
   recommended_owner?: { name: string; role: string } | null;
   hypothesis_updates?: Array<{
     hypothesis_id: string;
@@ -573,16 +576,24 @@ export default function Dashboard() {
                       ))}
                     </div>
                   </article>
+                  {safeState.agent_runtime.diagnosis && (
+                    <article className="agent-diagnosis-card">
+                      <div className="agent-card-eyebrow"><SearchCheck size={13} />ROOT CAUSE ISOLATED</div>
+                      <p>{safeState.agent_runtime.diagnosis}</p>
+                    </article>
+                  )}
                   <article className="agent-runtime-card">
-                    <div className="agent-card-heading"><strong>Latest tool execution</strong><span className="status-badge status-corroborated">Safe · read only</span></div>
-                    <div className="tool-call-card">
-                      <div className="tool-call-name"><Database size={15} /><strong>{safeState.agent_runtime.tool_call.tool.replaceAll('_', ' ')}</strong></div>
-                      <div className="tool-result-grid">
-                        {Object.entries(safeState.agent_runtime.tool_call.result).map(([key, value]) => (
-                          <div className="tool-result" key={key}><span>{key.replaceAll('_', ' ')}</span><strong>{formatToolValue(value)}</strong></div>
-                        ))}
+                    <div className="agent-card-heading"><strong>Autonomous investigation</strong><span className="status-badge status-corroborated">Safe · read only</span></div>
+                    {(safeState.agent_runtime.tool_calls ?? [safeState.agent_runtime.tool_call]).map(toolCall => (
+                      <div className="tool-call-card" key={toolCall.tool}>
+                        <div className="tool-call-name"><Database size={15} /><strong>{toolCall.tool.replaceAll('_', ' ')}</strong></div>
+                        <div className="tool-result-grid">
+                          {Object.entries(toolCall.result).map(([key, value]) => (
+                            <div className="tool-result" key={key}><span>{key.replaceAll('_', ' ')}</span><strong>{formatToolValue(value)}</strong></div>
+                          ))}
+                        </div>
                       </div>
-                    </div>
+                    ))}
                     {(safeState.agent_runtime.hypothesis_updates ?? []).map(update => (
                       <div className="confidence-update" key={update.hypothesis_id}>
                         <span>Hypothesis confidence</span>
@@ -593,6 +604,16 @@ export default function Dashboard() {
                       </div>
                     ))}
                   </article>
+                  {safeState.agent_runtime.remediation && (
+                    <article className="agent-remediation-card">
+                      <div>
+                        <div className="agent-card-eyebrow"><Wrench size={13} />TARGETED REMEDIATION</div>
+                        <p>{safeState.agent_runtime.remediation.action}</p>
+                        <small>Whole-system restart avoided · {safeState.agent_runtime.remediation.mode.replaceAll('_', ' ')}</small>
+                      </div>
+                      <StatusBadge status={safeState.agent_runtime.remediation.status} />
+                    </article>
+                  )}
                   <article className="agent-decision-card">
                     <div className="agent-card-eyebrow"><Radio size={13} />NEXT TEAM PROMPT</div>
                     <p>{safeState.agent_runtime.next_question}</p>

@@ -80,6 +80,9 @@
 .agent-runtime-card { min-width: 0; padding: 13px; background: var(--bg-card-inner); border: 1px solid var(--border-subtle); border-radius: 7px; }
 .agent-objective-card { background: color-mix(in srgb, var(--accent-primary) 5%, white); border-left: 3px solid var(--accent-primary); }
 .agent-objective-card > p { margin-top: 6px; color: var(--text-primary); font-size: 13px; line-height: 19px; font-weight: 550; }
+.agent-diagnosis-card { padding: 13px; background: #fff8ea; border: 1px solid #ead49c; border-left: 3px solid #b77800; border-radius: 7px; }
+.agent-diagnosis-card .agent-card-eyebrow { color: #8a5b00; }
+.agent-diagnosis-card p { margin-top: 6px; color: var(--text-primary); font-size: 12px; line-height: 18px; }
 .agent-card-eyebrow { display: flex; align-items: center; gap: 6px; color: var(--accent-primary); font-family: var(--font-mono); font-size: 9px; line-height: 13px; font-weight: 750; letter-spacing: .055em; }
 .agent-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-primary); font-size: 12px; }
 .agent-card-heading > span:not(.status-badge) { color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; }
@@ -99,6 +102,9 @@
 .confidence-update strong { font-family: var(--font-mono); }
 .confidence-update .confidence-new { color: var(--status-confirmed); }
 .confidence-update small { width: 100%; color: var(--text-muted); }
+.agent-remediation-card { padding: 13px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; background: var(--status-confirmed-bg); border: 1px solid var(--status-confirmed-border); border-radius: 7px; }
+.agent-remediation-card p { margin-top: 5px; color: var(--text-primary); font-size: 12px; line-height: 18px; font-weight: 650; }
+.agent-remediation-card small { display: block; margin-top: 3px; color: var(--text-muted); font-size: 9px; line-height: 13px; text-transform: capitalize; }
 .agent-decision-card { padding: 13px; color: white; background: linear-gradient(135deg, var(--accent-primary), color-mix(in srgb, var(--accent-primary) 72%, #142a22)); border-radius: 7px; box-shadow: var(--shadow-sm); }
 .agent-decision-card .agent-card-eyebrow { color: rgba(255,255,255,.72); }
 .agent-decision-card p { margin-top: 6px; font-size: 13px; line-height: 19px; font-weight: 620; }
