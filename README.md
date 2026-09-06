@@ -107,6 +107,12 @@ The currently configured public backend is:
 https://resqvoice-api-p1cj.onrender.com
 ```
 
+The current frontend deployment is:
+
+```text
+https://resqvoice-command-center.vercel.app
+```
+
 Its deployment/readiness probe is `GET /health`. The frontend derives HTTP,
 SSE, and WebSocket endpoints from `VITE_BACKEND_URL`.
 
