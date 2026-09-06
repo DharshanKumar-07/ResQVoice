@@ -303,7 +303,17 @@ async def _extract_transcript_batch_background(
                     "conflicts": list(dict.fromkeys(conflict_ids)),
                 },
             })
-            cycle = run_agent_cycle(db, reason="transcript_batch")
+            outage_segment = next(
+                (segment for segment in reversed(segments) if is_outage_trigger(segment.text)),
+                None,
+            )
+            cycle = (
+                run_autonomous_outage_playbook(
+                    db, outage_segment.text, outage_segment.segment_id,
+                )
+                if outage_segment is not None
+                else run_agent_cycle(db, reason="transcript_batch")
+            )
             await enqueue_generated_intervention(
                 "AGENT_NEXT_STEP", "MEDIUM", db,
                 trigger_context={
