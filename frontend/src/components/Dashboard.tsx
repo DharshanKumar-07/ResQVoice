@@ -40,7 +40,7 @@ import type {
   TranscriptEvent,
   Unknown,
 } from '../types';
-import { MOCK_PAYMENT_OUTAGE_TRANSCRIPTS } from '../data/mockIncident';
+import { MOCK_PAYMENT_OUTAGE } from '../data/mockIncident';
 
 interface State {
   facts: Fact[];
@@ -150,15 +150,19 @@ export default function Dashboard() {
   const [useMockData, setUseMockData] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [proposedAction, setProposedAction] = useState('Rollback the pricing tier deployment');
-  const [actionEvidence, setActionEvidence] = useState('DB CPU is at 100%\nPricing deployment preceded the outage');
+  const [proposedAction, setProposedAction] = useState('Restart only pricing-servlet v2.18.4 and drain orphaned database sessions');
+  const [actionEvidence, setActionEvidence] = useState(
+    'Payment API error rate reached 38.2%\n' +
+    'Pricing servlet logs show DB_POOL_ACQUIRE_TIMEOUT\n' +
+    'Core payment worker health checks remain green',
+  );
   const [completedSteps, setCompletedSteps] = useState(
     'Confirm the incident symptoms and identify the affected production service and deployment.\n' +
     'Capture the current release version, error rate, latency, and customer-impact baseline.\n' +
     'Identify and validate the last known-good release and confirm rollback compatibility.',
   );
-  const [approverName, setApproverName] = useState('Incident Commander');
-  const [verificationMetric, setVerificationMetric] = useState('Payment error rate returned to baseline');
+  const [approverName, setApproverName] = useState('Priya Nair — Incident Commander');
+  const [verificationMetric, setVerificationMetric] = useState('Error rate below 1%, p95 latency below 500 ms, synthetic checkout passing');
   const [verificationFactId, setVerificationFactId] = useState('');
   const [safetyResult, setSafetyResult] = useState<SafetyRecommendation | null>(null);
   const [busyDecisionId, setBusyDecisionId] = useState<string | null>(null);
@@ -362,7 +366,7 @@ export default function Dashboard() {
 
   const liveState = state ?? EMPTY_STATE;
   const safeState: State = useMockData
-    ? { ...EMPTY_STATE, transcripts: MOCK_PAYMENT_OUTAGE_TRANSCRIPTS }
+    ? { ...EMPTY_STATE, ...MOCK_PAYMENT_OUTAGE }
     : liveState;
 
   useEffect(() => {
@@ -400,7 +404,8 @@ export default function Dashboard() {
   ).length;
   const unresolvedSignals = safeState.hypotheses.filter(hypothesis =>
     hypothesis.status === 'UNCONFIRMED' || hypothesis.status === 'DISPUTED',
-  ).length + safeState.conflicts.length + safeState.unknowns.filter(item => item.status === 'OPEN').length;
+  ).length + safeState.conflicts.filter(item => item.status !== 'RESOLVED').length
+    + safeState.unknowns.filter(item => item.status === 'OPEN').length;
   const incidentRecovered = safeState.agent_runtime?.remediation?.status === 'SIMULATED_EXECUTED'
     && safeState.agent_runtime?.recovery_check?.result?.recovered === true;
 

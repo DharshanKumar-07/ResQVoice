@@ -1,48 +1,98 @@
-import type { TranscriptEvent } from '../types';
+import type {
+  Action, Claim, Conflict, Decision, Fact, Hypothesis, TranscriptEvent, Unknown,
+} from '../types';
 
-// Frontend-only copy of payment_outage_transcript.json. These records are
-// never POSTed to the backend and cannot contaminate the live incident store.
-export const MOCK_PAYMENT_OUTAGE_TRANSCRIPTS: TranscriptEvent[] = [
-  {
-    id: -6,
-    timestamp: '2023-10-27T10:00:00Z',
-    speaker: 'Priya',
-    role: 'Incident Commander',
-    text: "Alright everyone, we have a P1. Support is reporting that users can't checkout, they are getting 500 errors on the payment page. Rahul, what are you seeing?",
-  },
-  {
-    id: -5,
-    timestamp: '2023-10-27T10:01:00Z',
-    speaker: 'Rahul',
-    role: 'Backend Engineer',
-    text: "I'm looking at the logs now. The payment service is throwing connection timeouts to the database. It looks like the connections are maxing out.",
-  },
-  {
-    id: -4,
-    timestamp: '2023-10-27T10:02:00Z',
-    speaker: 'Arjun',
-    role: 'Database Engineer',
-    text: 'Let me check the primary DB instance. Yes, CPU is at 100% and there are a lot of stuck queries from the payment service.',
-  },
-  {
-    id: -3,
-    timestamp: '2023-10-27T10:03:00Z',
-    speaker: 'Meera',
-    role: 'DevOps/SRE',
-    text: 'I think this might be related to the new pricing tier deployment we did an hour ago. Could that be causing inefficient queries?',
-  },
-  {
-    id: -2,
-    timestamp: '2023-10-27T10:04:00Z',
-    speaker: 'Support',
-    role: 'Support Engineer',
-    text: "Just confirming, customer complaints have spiked in the last 15 minutes. It's definitely a widespread issue.",
-  },
-  {
-    id: -1,
-    timestamp: '2023-10-27T10:05:00Z',
-    speaker: 'Priya',
-    role: 'Incident Commander',
-    text: 'Okay, Meera, please rollback the pricing tier deployment immediately as a mitigation step. Arjun, kill those stuck queries to free up the DB.',
-  },
+// Complete frontend-only replay for product demos. This data is never POSTed.
+const at = (minute: number, second = 0) =>
+  new Date(Date.UTC(2026, 8, 6, 10, minute, second)).toISOString();
+
+const transcripts: TranscriptEvent[] = [
+  { id: -10, timestamp: at(0), speaker: 'Priya Nair', role: 'Incident Commander', text: 'We have a P1 checkout outage. Payment requests are returning 503s across all regions. Rahul, check the service; Meera, take infrastructure.' },
+  { id: -9, timestamp: at(1), speaker: 'Rahul Shah', role: 'Backend Engineer', text: 'Payment API error rate is 38.2%. The pricing servlet is timing out while acquiring database connections.' },
+  { id: -8, timestamp: at(2), speaker: 'Arjun Rao', role: 'Database Engineer', text: 'Primary database CPU is 96%, with 41 waiting connections and 186 long-running pricing queries.' },
+  { id: -7, timestamp: at(3), speaker: 'Meera Iyer', role: 'DevOps/SRE', text: "The core payment service looks healthy, so I'm not sure whether this is an application failure or database saturation." },
+  { id: -6, timestamp: at(3, 12), speaker: 'ResQVoice Agent', role: 'AI Incident Teammate', text: "I found the mismatch. Core payments is healthy, but the pricing servlet is failing its database health check. I'm checking the last deployment and its logs now." },
+  { id: -5, timestamp: at(4), speaker: 'Sofia Martin', role: 'Customer Support Lead', text: 'We have 2,847 failed checkouts and 317 customer reports in the last 15 minutes. Impact is still rising.' },
+  { id: -4, timestamp: at(5), speaker: 'ResQVoice Agent', role: 'AI Incident Teammate', text: 'I isolated the fault to the pricing servlet deployed at 09:42 UTC. I am restarting only that component in the demo sandbox and leaving the healthy payment workers untouched.' },
+  { id: -3, timestamp: at(6), speaker: 'Meera Iyer', role: 'DevOps/SRE', text: 'Restart completed. New pods are healthy and the database connection queue is draining.' },
+  { id: -2, timestamp: at(7), speaker: 'Rahul Shah', role: 'Backend Engineer', text: 'Payment error rate is back to 0.4%, p95 latency is 420 milliseconds, and test checkouts are succeeding.' },
+  { id: -1, timestamp: at(7, 10), speaker: 'ResQVoice Agent', role: 'AI Incident Teammate', text: "Recovery is verified. I resolved the evidence gap, assigned the follow-up, and drafted the handoff. I'll keep watching the error rate while the team confirms customer recovery." },
 ];
+
+export const MOCK_PAYMENT_OUTAGE = {
+  facts: [
+    { id: 'fact-impact', description: 'Checkout requests returned HTTP 503 responses in all production regions.', source: 'Payment API telemetry', speaker: 'Rahul Shah', timestamp: at(1), status: 'CONFIRMED' },
+    { id: 'fact-errors', description: 'Payment API error rate peaked at 38.2%.', source: 'Grafana / payment-api', speaker: 'Rahul Shah', timestamp: at(1), status: 'CONFIRMED' },
+    { id: 'fact-db', description: 'Primary database reached 96% CPU with 41 waiting connections and 186 long-running queries.', source: 'Database performance insights', speaker: 'Arjun Rao', timestamp: at(2), status: 'CONFIRMED' },
+    { id: 'fact-deploy', description: 'Pricing servlet release v2.18.4 was deployed at 09:42 UTC, 18 minutes before impact.', source: 'Deployment audit log', speaker: 'ResQVoice Agent', timestamp: at(4), status: 'CONFIRMED' },
+    { id: 'fact-recovery', description: 'After targeted restart, errors fell to 0.4%, p95 latency reached 420 ms, and synthetic checkouts passed.', source: 'Automated recovery probe', speaker: 'ResQVoice Agent', timestamp: at(7), status: 'CONFIRMED' },
+  ] satisfies Fact[],
+  hypotheses: [
+    { id: 'hyp-pricing-pool', description: 'Pricing servlet v2.18.4 leaked database connections, exhausting the shared pool and breaking checkout.', origin: 'ResQVoice Agent', supporting_evidence: ['fact-db', 'fact-deploy', 'fact-recovery'], contradicting_evidence: [], confidence: 0.94, status: 'CONFIRMED' },
+    { id: 'hyp-payment-workers', description: 'The core payment worker fleet caused the outage.', origin: 'Initial responder assumption', supporting_evidence: ['fact-errors'], contradicting_evidence: ['Core worker health checks remained green', 'Only pricing servlet logs showed pool timeouts'], confidence: 0.08, status: 'REJECTED' },
+  ] satisfies Hypothesis[],
+  actions: [
+    { id: 'action-restart', task: 'Restart only the unhealthy pricing servlet deployment.', owner: 'Meera Iyer', status: 'COMPLETED', priority: 'P1', created_at: at(4), deadline: at(6) },
+    { id: 'action-queries', task: 'Terminate orphaned pricing queries and confirm the connection queue drains.', owner: 'Arjun Rao', status: 'COMPLETED', priority: 'P1', created_at: at(4), deadline: at(7) },
+    { id: 'action-verify', task: 'Run synthetic checkout probes and monitor error rate for ten minutes.', owner: 'Rahul Shah', status: 'IN_PROGRESS', priority: 'P1', created_at: at(5), deadline: at(17) },
+    { id: 'action-followup', task: 'Add connection-pool saturation alerts and review v2.18.4 for a leak.', owner: 'Meera Iyer', status: 'TODO', priority: 'P2', created_at: at(7), deadline: at(37) },
+  ] satisfies Action[],
+  decisions: [
+    { id: 'decision-targeted-restart', recommendation: 'Restart only pricing-servlet v2.18.4; do not restart the healthy payment worker fleet.', evidence: ['38.2% checkout errors', 'Pricing servlet DB pool timeout', 'Core worker health checks green'], sop_reference: 'SOP-PAY-07 §4.2 Targeted service recovery', approved_by: 'Priya Nair', approval_time: at(4, 20), execution_status: 'COMPLETED', result: 'Pricing servlet restarted in DEMO_SANDBOX; error rate recovered to 0.4%.' },
+    { id: 'decision-monitor', recommendation: 'Keep the incident at P1 until ten minutes of healthy synthetic checkouts are observed.', evidence: ['Recovery probe passed', 'Customer-impact window still active'], sop_reference: 'SOP-INC-02 §6 Recovery monitoring', approved_by: 'Priya Nair', approval_time: at(7, 20), execution_status: 'APPROVED', result: 'Monitoring window active; resolution criteria recorded.' },
+  ] satisfies Decision[],
+  claims: [
+    { id: 'claim-outage', text: 'Checkout is failing with HTTP 503 responses in every region.', speaker: 'Priya Nair', role: 'Incident Commander', timestamp: at(0), status: 'CONFIRMED', supporting: ['fact-impact', 'fact-errors'], contradicting: [] },
+    { id: 'claim-timeouts', text: 'The pricing servlet is timing out while acquiring database connections.', speaker: 'Rahul Shah', role: 'Backend Engineer', timestamp: at(1), status: 'CONFIRMED', supporting: ['fact-errors', 'fact-db'], contradicting: [] },
+    { id: 'claim-db-saturation', text: 'Database CPU and waiting connections indicate pool saturation.', speaker: 'Arjun Rao', role: 'Database Engineer', timestamp: at(2), status: 'CONFIRMED', supporting: ['fact-db'], contradicting: [] },
+    { id: 'claim-core-healthy', text: 'The core payment worker fleet is healthy.', speaker: 'Meera Iyer', role: 'DevOps/SRE', timestamp: at(3), status: 'CONFIRMED', supporting: ['Core worker health checks remained green'], contradicting: ['claim-outage'] },
+    { id: 'claim-deploy', text: 'Release v2.18.4 introduced the pricing servlet connection leak.', speaker: 'ResQVoice Agent', role: 'AI Incident Teammate', timestamp: at(4), status: 'CORROBORATED', supporting: ['fact-deploy', 'fact-recovery'], contradicting: [] },
+    { id: 'claim-recovered', text: 'Checkout recovered after the targeted pricing servlet restart.', speaker: 'Rahul Shah', role: 'Backend Engineer', timestamp: at(7), status: 'CONFIRMED', supporting: ['fact-recovery'], contradicting: [] },
+  ] satisfies Claim[],
+  conflicts: [
+    { id: 'conflict-service-health', topic: 'Payment platform health versus checkout availability', claim_a_id: 'claim-outage', claim_b_id: 'claim-core-healthy', status: 'RESOLVED', recommended_verification: 'Compare health checks by component and run a synthetic checkout through the pricing path.' },
+  ] satisfies Conflict[],
+  unknowns: [
+    { id: 'unknown-component', description: 'Which payment component is unhealthy while core worker checks remain green?', status: 'RESOLVED', source_id: 'conflict-service-health' },
+    { id: 'unknown-change', description: 'What production change preceded the first checkout failure?', status: 'RESOLVED', source_id: 'claim-deploy' },
+  ] satisfies Unknown[],
+  agent_runtime: {
+    timestamp: at(7, 10),
+    objective: 'Restore checkout safely, preserve healthy services, and keep responders aligned with verified evidence.',
+    plan: [
+      { step: 'Confirm customer impact and affected transaction path', status: 'DONE' },
+      { step: 'Resolve contradictions and evidence gaps', status: 'DONE' },
+      { step: 'Isolate the failing component and recent change', status: 'DONE' },
+      { step: 'Execute the smallest safe remediation', status: 'DONE' },
+      { step: 'Verify recovery metrics and assign follow-up work', status: 'DONE' },
+    ],
+    activity: ['Detected a P1 checkout outage from the live conversation.', 'Reconciled healthy core workers with a failing pricing path.', 'Correlated database saturation with pricing-servlet v2.18.4.', 'Restarted only the affected servlet in DEMO_SANDBOX.', 'Verified recovery and assigned remaining work.'],
+    tool_call: { tool: 'check_service_health', mode: 'DEMO_SANDBOX', result: { service: 'pricing-servlet', status: 'degraded', healthy_instances: '3/8' } },
+    tool_calls: [
+      { tool: 'check_service_health', mode: 'DEMO_SANDBOX', result: { service: 'pricing-servlet', status: 'degraded', healthy_instances: '3/8' } },
+      { tool: 'inspect_service_logs', mode: 'DEMO_SANDBOX', result: { error: 'DB_POOL_ACQUIRE_TIMEOUT', occurrences: 1247, first_seen_utc: '09:59:41' } },
+      { tool: 'get_recent_deployments', mode: 'DEMO_SANDBOX', result: { release: 'v2.18.4', deployed_at_utc: '09:42', changed_component: 'pricing-servlet' } },
+    ],
+    diagnosis: 'Pricing servlet v2.18.4 leaked database connections, exhausting its pool while the core payment workers remained healthy.',
+    remediation: { action: 'Restarted pricing-servlet only and drained orphaned database sessions.', status: 'SIMULATED_EXECUTED', mode: 'DEMO_SANDBOX' },
+    recovery_check: { tool: 'get_error_rate', mode: 'DEMO_SANDBOX', result: { recovered: true, error_rate_percent: 0.4, p95_latency_ms: 420, synthetic_checkout: 'passed' } },
+    recommended_owner: { name: 'Meera Iyer', role: 'DevOps/SRE' },
+    hypothesis_updates: [{ hypothesis_id: 'hyp-pricing-pool', previous_confidence: 0.62, new_confidence: 0.94, evidence_overlap: ['DB pool timeout', 'v2.18.4 deploy', 'restart recovery'] }],
+    next_question: "I restarted only the affected pricing servlet and verified recovery. I'll keep watching the error rate while Rahul confirms customer checkouts.",
+  },
+  agent_activity: [
+    { id: 'activity-10', timestamp: at(7, 10), phase: 'update', title: 'Spoke recovery update to the room', detail: 'Reported the targeted action, evidence, and monitoring owner in natural language.', status: 'active' as const },
+    { id: 'activity-9', timestamp: at(7, 8), phase: 'verify', title: 'Verified checkout recovery', detail: 'Error rate 0.4%, p95 latency 420 ms, synthetic checkout passed.', status: 'complete' as const },
+    { id: 'activity-8', timestamp: at(7, 5), phase: 'act', title: 'Assigned recovery monitoring', detail: 'Assigned Rahul Shah to monitor synthetic checkout probes for ten minutes.', status: 'complete' as const },
+    { id: 'activity-7', timestamp: at(6), phase: 'act', title: 'Executed targeted remediation', detail: 'Restarted pricing-servlet only and drained orphaned sessions in DEMO_SANDBOX.', status: 'complete' as const },
+    { id: 'activity-6', timestamp: at(5), phase: 'decide', title: 'Selected smallest safe action', detail: 'Avoided a whole-platform restart because core payment workers were healthy.', status: 'complete' as const },
+    { id: 'activity-5', timestamp: at(4, 30), phase: 'verify', title: 'Resolved evidence gaps', detail: 'Component health and deployment evidence reconciled both open questions.', status: 'complete' as const },
+    { id: 'activity-4', timestamp: at(4), phase: 'tool', title: 'Inspected deployments and logs', detail: 'Found DB_POOL_ACQUIRE_TIMEOUT after pricing-servlet v2.18.4.', status: 'complete' as const },
+    { id: 'activity-3', timestamp: at(3, 15), phase: 'update', title: 'Intervened in the conversation', detail: 'Explained the component-level mismatch and announced the next investigation.', status: 'complete' as const },
+    { id: 'activity-2', timestamp: at(3), phase: 'plan', title: 'Detected contradictory evidence', detail: 'Checkout was unavailable while core payment health checks remained green.', status: 'complete' as const },
+    { id: 'activity-1', timestamp: at(0), phase: 'observe', title: 'Detected P1 customer impact', detail: 'Recognized widespread HTTP 503 checkout failures from the live call.', status: 'complete' as const },
+  ],
+  transcripts,
+};
+
+export const MOCK_PAYMENT_OUTAGE_TRANSCRIPTS = transcripts;
